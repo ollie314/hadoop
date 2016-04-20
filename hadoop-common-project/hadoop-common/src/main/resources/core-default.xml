@@ -506,6 +506,14 @@
   </description>
 </property>
 
+<property>
+  <name>io.erasurecode.codec.rs-default.rawcoder</name>
+  <value>org.apache.hadoop.io.erasurecode.rawcoder.RSRawErasureCoderFactory</value>
+  <description>
+    Raw coder implementation for the rs-default codec.
+  </description>
+</property>
+
 <!-- file system properties -->
 
 <property>
@@ -762,6 +770,13 @@
   <description>AWS S3 endpoint to connect to. An up-to-date list is
     provided in the AWS Documentation: regions and endpoints. Without this
     property, the standard region (s3.amazonaws.com) is assumed.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.path.style.access</name>
+  <description>Enable S3 path style access ie disabling the default virtual hosting behaviour.
+    Useful for S3A-compliant storage providers as it removes the need to set up DNS for virtual hosting.
   </description>
 </property>
 
