@@ -20,10 +20,7 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.logaggregatio
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyMap;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isA;
+import static org.mockito.Matchers.*;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -712,7 +709,7 @@ public class TestLogAggregationService extends BaseContainerManagerTest {
     doThrow(new YarnRuntimeException("KABOOM!"))
       .when(logAggregationService).initAppAggregator(
           eq(appId), eq(user), any(Credentials.class),
-          anyMap(), any(LogAggregationContext.class));
+          anyMap(), any(LogAggregationContext.class), anyLong());
     LogAggregationContext contextWithAMAndFailed =
         Records.newRecord(LogAggregationContext.class);
     contextWithAMAndFailed.setLogAggregationPolicyClassName(
@@ -777,8 +774,8 @@ public class TestLogAggregationService extends BaseContainerManagerTest {
 
     dispatcher.await();
     ApplicationEvent expectedEvents[] = new ApplicationEvent[]{
-        new ApplicationEvent(appId, 
-        		ApplicationEventType.APPLICATION_LOG_HANDLING_FAILED)
+        new ApplicationEvent(appId,
+            ApplicationEventType.APPLICATION_LOG_HANDLING_FAILED)
     };
     checkEvents(appEventHandler, expectedEvents, false,
         "getType", "getApplicationID", "getDiagnostic");
@@ -794,10 +791,15 @@ public class TestLogAggregationService extends BaseContainerManagerTest {
 
     logAggregationService.stop();
     assertEquals(0, logAggregationService.getNumAggregators());
-    verify(spyDelSrvc).delete(eq(user), any(Path.class),
+    // local log dir shouldn't be deleted given log aggregation cannot
+    // continue due to aggregated log dir creation failure on remoteFS.
+    verify(spyDelSrvc, never()).delete(eq(user), any(Path.class),
         Mockito.<Path>anyVararg());
     verify(logAggregationService).closeFileSystems(
         any(UserGroupInformation.class));
+    // make sure local log dir is not deleted in case log aggregation
+    // service cannot be initiated.
+    assertTrue(appLogDir.exists());
   }
 
   private void writeContainerLogs(File appLogDir, ContainerId containerId,

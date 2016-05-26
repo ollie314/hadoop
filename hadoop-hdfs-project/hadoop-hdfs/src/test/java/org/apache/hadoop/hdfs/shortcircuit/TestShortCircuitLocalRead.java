@@ -45,7 +45,7 @@ import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.TestBlockReaderLocal;
+import org.apache.hadoop.hdfs.client.impl.TestBlockReaderLocal;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
@@ -54,7 +54,6 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtocol;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
-import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.unix.DomainSocket;
 import org.apache.hadoop.net.unix.TemporarySocketDirectory;
@@ -376,10 +375,12 @@ public class TestShortCircuitLocalRead {
       try {
         proxy.getBlockLocalPathInfo(blk, token);
         Assert.fail("The call should have failed as this user "
-            + " is not allowed to call getBlockLocalPathInfo");
+            + " is not configured in "
+            + DFSConfigKeys.DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY);
       } catch (IOException ex) {
         Assert.assertTrue(ex.getMessage().contains(
-            "not allowed to call getBlockLocalPathInfo"));
+            "not configured in "
+            + DFSConfigKeys.DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY));
       }
     } finally {
       fs.close();
@@ -593,7 +594,7 @@ public class TestShortCircuitLocalRead {
 
   /**
    * Test that file data can be read by reading the block
-   * through RemoteBlockReader
+   * through BlockReaderRemote
    * @throws IOException
   */
   public void doTestShortCircuitReadWithRemoteBlockReader(
@@ -623,9 +624,9 @@ public class TestShortCircuitLocalRead {
     try {
       checkFileContent(uri, file1, fileData, readOffset, shortCircuitUser, 
           conf, shortCircuitFails);
-      //RemoteBlockReader have unsupported method read(ByteBuffer bf)
+      //BlockReaderRemote have unsupported method read(ByteBuffer bf)
       assertTrue(
-          "RemoteBlockReader unsupported method read(ByteBuffer bf) error",
+          "BlockReaderRemote unsupported method read(ByteBuffer bf) error",
           checkUnsupportedMethod(fs, file1, fileData, readOffset));
     } catch(IOException e) {
       throw new IOException(

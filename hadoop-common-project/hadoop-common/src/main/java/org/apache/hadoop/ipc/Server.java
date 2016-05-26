@@ -243,14 +243,14 @@ public abstract class Server {
   static class RpcKindMapValue {
     final Class<? extends Writable> rpcRequestWrapperClass;
     final RpcInvoker rpcInvoker;
+
     RpcKindMapValue (Class<? extends Writable> rpcRequestWrapperClass,
           RpcInvoker rpcInvoker) {
       this.rpcInvoker = rpcInvoker;
       this.rpcRequestWrapperClass = rpcRequestWrapperClass;
     }   
   }
-  static Map<RPC.RpcKind, RpcKindMapValue> rpcKindMap = new
-      HashMap<RPC.RpcKind, RpcKindMapValue>(4);
+  static Map<RPC.RpcKind, RpcKindMapValue> rpcKindMap = new HashMap<>(4);
   
   
 
@@ -2921,7 +2921,15 @@ public abstract class Server {
   public int getCallQueueLen() {
     return callQueue.size();
   }
-  
+
+  public boolean isClientBackoffEnabled() {
+    return callQueue.isClientBackoffEnabled();
+  }
+
+  public void setClientBackoffEnabled(boolean value) {
+    callQueue.setClientBackoffEnabled(value);
+  }
+
   /**
    * The maximum size of the rpc call queue of this server.
    * @return The maximum size of the rpc call queue.

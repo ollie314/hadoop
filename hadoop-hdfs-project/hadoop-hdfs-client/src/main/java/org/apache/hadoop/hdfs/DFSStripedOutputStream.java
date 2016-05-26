@@ -59,6 +59,7 @@ import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.io.erasurecode.ErasureCoderOptions;
 import org.apache.hadoop.io.erasurecode.rawcoder.RawErasureEncoder;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Progressable;
@@ -286,8 +287,10 @@ public class DFSStripedOutputStream extends DFSOutputStream {
     flushAllExecutorCompletionService = new
         ExecutorCompletionService<>(flushAllExecutor);
 
-    encoder = CodecUtil.createRSRawEncoder(dfsClient.getConfiguration(),
-        numDataBlocks, numParityBlocks, ecPolicy.getCodecName());
+    ErasureCoderOptions coderOptions = new ErasureCoderOptions(
+        numDataBlocks, numParityBlocks);
+    encoder = CodecUtil.createRawEncoder(dfsClient.getConfiguration(),
+        ecPolicy.getCodecName(), coderOptions);
 
     coordinator = new Coordinator(numAllBlocks);
     try {
@@ -301,7 +304,7 @@ public class DFSStripedOutputStream extends DFSOutputStream {
     for (short i = 0; i < numAllBlocks; i++) {
       StripedDataStreamer streamer = new StripedDataStreamer(stat,
           dfsClient, src, progress, checksum, cachingStrategy, byteArrayManager,
-          favoredNodes, i, coordinator);
+          favoredNodes, i, coordinator, getAddBlockFlags());
       streamers.add(streamer);
     }
     currentPackets = new DFSPacket[streamers.size()];
@@ -406,7 +409,7 @@ public class DFSStripedOutputStream extends DFSOutputStream {
         StripedDataStreamer streamer = new StripedDataStreamer(oldStreamer.stat,
             dfsClient, src, oldStreamer.progress,
             oldStreamer.checksum4WriteBlock, cachingStrategy, byteArrayManager,
-            favoredNodes, i, coordinator);
+            favoredNodes, i, coordinator, getAddBlockFlags());
         streamers.set(i, streamer);
         currentPackets[i] = null;
         if (i == currentIndex) {
@@ -458,7 +461,7 @@ public class DFSStripedOutputStream extends DFSOutputStream {
     LOG.debug("Allocating new block group. The previous block group: "
         + currentBlockGroup);
     final LocatedBlock lb = addBlock(excludedNodes, dfsClient, src,
-        currentBlockGroup, fileId, favoredNodes);
+        currentBlockGroup, fileId, favoredNodes, getAddBlockFlags());
     assert lb.isStriped();
     if (lb.getLocations().length < numDataBlocks) {
       throw new IOException("Failed to get " + numDataBlocks
