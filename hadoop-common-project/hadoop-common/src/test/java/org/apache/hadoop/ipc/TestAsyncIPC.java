@@ -30,6 +30,7 @@ import org.apache.hadoop.ipc.TestIPC.TestServer;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.AsyncGetFuture;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -49,6 +50,11 @@ public class TestAsyncIPC {
 
   private static Configuration conf;
   private static final Log LOG = LogFactory.getLog(TestAsyncIPC.class);
+
+  static <T extends Writable> AsyncGetFuture<T, IOException>
+      getAsyncRpcResponseFuture() {
+    return new AsyncGetFuture<>(Client.getAsyncRpcResponse());
+  }
 
   @Before
   public void setupConf() {
@@ -84,7 +90,7 @@ public class TestAsyncIPC {
         try {
           final long param = TestIPC.RANDOM.nextLong();
           TestIPC.call(client, param, server, conf);
-          returnFutures.put(i, Client.getAsyncRpcResponse());
+          returnFutures.put(i, getAsyncRpcResponseFuture());
           expectedValues.put(i, param);
         } catch (Exception e) {
           failed = true;
@@ -204,7 +210,7 @@ public class TestAsyncIPC {
 
     private void doCall(final int idx, final long param) throws IOException {
       TestIPC.call(client, param, server, conf);
-      returnFutures.put(idx, Client.getAsyncRpcResponse());
+      returnFutures.put(idx, getAsyncRpcResponseFuture());
       expectedValues.put(idx, param);
     }
 
@@ -361,7 +367,7 @@ public class TestAsyncIPC {
       Call createCall(RpcKind rpcKind, Writable rpcRequest) {
         // Set different call id and retry count for the next call
         Client.setCallIdAndRetryCount(Client.nextCallId(),
-            TestIPC.RANDOM.nextInt(255));
+            TestIPC.RANDOM.nextInt(255), null);
 
         final Call call = super.createCall(rpcKind, rpcRequest);
 
@@ -415,7 +421,7 @@ public class TestAsyncIPC {
     final int retryCount = 255;
     // Override client to store the call id
     final Client client = new Client(LongWritable.class, conf);
-    Client.setCallIdAndRetryCount(Client.nextCallId(), retryCount);
+    Client.setCallIdAndRetryCount(Client.nextCallId(), retryCount, null);
 
     // Attach a listener that tracks every call ID received by the server.
     final TestServer server = new TestIPC.TestServer(1, false, conf);

@@ -178,7 +178,7 @@ public abstract class AbstractYarnScheduler
     NodeFilter nodeFilter = new NodeFilter() {
       @Override
       public boolean accept(SchedulerNode node) {
-        return SchedulerAppUtils.isBlacklisted(app, node, LOG);
+        return SchedulerAppUtils.isPlaceBlacklisted(app, node, LOG);
       }
     };
     return nodeTracker.getNodes(nodeFilter);
@@ -354,14 +354,6 @@ public abstract class AbstractYarnScheduler
         continue;
       }
 
-      // Unmanaged AM recovery is addressed in YARN-1815
-      if (rmApp.getApplicationSubmissionContext().getUnmanagedAM()) {
-        LOG.info("Skip recovering container " + container + " for unmanaged AM."
-            + rmApp.getApplicationId());
-        killOrphanContainerOnNode(nm, container);
-        continue;
-      }
-
       SchedulerApplication<T> schedulerApp = applications.get(appId);
       if (schedulerApp == null) {
         LOG.info("Skip recovering container  " + container
@@ -524,7 +516,23 @@ public abstract class AbstractYarnScheduler
       return;
     }
 
-    completedContainerInternal(rmContainer, containerStatus, event);
+    if (!rmContainer.isRemotelyAllocated()) {
+      completedContainerInternal(rmContainer, containerStatus, event);
+    } else {
+      ContainerId containerId = rmContainer.getContainerId();
+      // Inform the container
+      rmContainer.handle(
+          new RMContainerFinishedEvent(containerId, containerStatus, event));
+      SchedulerApplicationAttempt schedulerAttempt =
+          getCurrentAttemptForContainer(containerId);
+      if (schedulerAttempt != null) {
+        schedulerAttempt.removeRMContainer(containerId);
+      }
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Completed container: " + rmContainer.getContainerId() +
+            " in state: " + rmContainer.getState() + " event:" + event);
+      }
+    }
 
     // If the container is getting killed in ACQUIRED state, the requester (AM
     // for regular containers and RM itself for AM container) will not know what

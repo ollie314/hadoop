@@ -243,7 +243,7 @@ public class NodeCLI extends YarnCLI {
    */
   private void printNodeStatus(String nodeIdStr) throws YarnException,
       IOException {
-    NodeId nodeId = ConverterUtils.toNodeId(nodeIdStr);
+    NodeId nodeId = NodeId.fromString(nodeIdStr);
     List<NodeReport> nodesReport = client.getNodeReports();
     // Use PrintWriter.println, which uses correct platform line ending.
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -275,9 +275,9 @@ public class NodeCLI extends YarnCLI {
       nodeReportStr.println(nodeReport.getNumContainers());
       nodeReportStr.print("\tMemory-Used : ");
       nodeReportStr.println((nodeReport.getUsed() == null) ? "0MB"
-          : (nodeReport.getUsed().getMemory() + "MB"));
+          : (nodeReport.getUsed().getMemorySize() + "MB"));
       nodeReportStr.print("\tMemory-Capacity : ");
-      nodeReportStr.println(nodeReport.getCapability().getMemory() + "MB");
+      nodeReportStr.println(nodeReport.getCapability().getMemorySize() + "MB");
       nodeReportStr.print("\tCPU-Used : ");
       nodeReportStr.println((nodeReport.getUsed() == null) ? "0 vcores"
           : (nodeReport.getUsed().getVirtualCores() + " vcores"));

@@ -31,6 +31,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.ContainerLaunch;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
@@ -40,10 +41,10 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resource
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.ResourceHandlerModule;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker.DockerClient;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker.DockerRunCommand;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker.DockerStopCommand;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerRuntimeConstants;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerRuntimeContext;
-
 
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -73,6 +74,8 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   public static final String ENV_DOCKER_CONTAINER_RUN_OVERRIDE_DISABLE =
       "YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE";
   @InterfaceAudience.Private
+  public static final String ENV_DOCKER_CONTAINER_NETWORK =
+      "YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK";
   public static final String ENV_DOCKER_CONTAINER_RUN_PRIVILEGED_CONTAINER =
       "YARN_CONTAINER_RUNTIME_DOCKER_RUN_PRIVILEGED_CONTAINER";
   @InterfaceAudience.Private
@@ -82,6 +85,8 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   private Configuration conf;
   private DockerClient dockerClient;
   private PrivilegedOperationExecutor privilegedOperationExecutor;
+  private Set<String> allowedNetworks = new HashSet<>();
+  private String defaultNetwork;
   private CGroupsHandler cGroupsHandler;
   private AccessControlList privilegedContainersAcl;
 
@@ -122,6 +127,26 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       throws ContainerExecutionException {
     this.conf = conf;
     dockerClient = new DockerClient(conf);
+    allowedNetworks.clear();
+    allowedNetworks.addAll(Arrays.asList(
+        conf.getStrings(YarnConfiguration.NM_DOCKER_ALLOWED_CONTAINER_NETWORKS,
+            YarnConfiguration.DEFAULT_NM_DOCKER_ALLOWED_CONTAINER_NETWORKS)));
+    defaultNetwork = conf.get(
+        YarnConfiguration.NM_DOCKER_DEFAULT_CONTAINER_NETWORK,
+        YarnConfiguration.DEFAULT_NM_DOCKER_DEFAULT_CONTAINER_NETWORK);
+
+    if(!allowedNetworks.contains(defaultNetwork)) {
+      String message = "Default network: " + defaultNetwork
+          + " is not in the set of allowed networks: " + allowedNetworks;
+
+      if (LOG.isWarnEnabled()) {
+        LOG.warn(message + ". Please check "
+            + "configuration");
+      }
+
+      throw new ContainerExecutionException(message);
+    }
+
     privilegedContainersAcl = new AccessControlList(conf.get(
         YarnConfiguration.NM_DOCKER_PRIVILEGED_CONTAINERS_ACL,
         YarnConfiguration.DEFAULT_NM_DOCKER_PRIVILEGED_CONTAINERS_ACL));
@@ -131,6 +156,18 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   public void prepareContainer(ContainerRuntimeContext ctx)
       throws ContainerExecutionException {
 
+  }
+
+  private void validateContainerNetworkType(String network)
+      throws ContainerExecutionException {
+    if (allowedNetworks.contains(network)) {
+      return;
+    }
+
+    String msg = "Disallowed network:  '" + network
+        + "' specified. Allowed networks: are " + allowedNetworks
+        .toString();
+    throw new ContainerExecutionException(msg);
   }
 
   public void addCGroupParentIfRequired(String resourcesOptions,
@@ -260,6 +297,13 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     Map<String, String> environment = container.getLaunchContext()
         .getEnvironment();
     String imageName = environment.get(ENV_DOCKER_CONTAINER_IMAGE);
+    String network = environment.get(ENV_DOCKER_CONTAINER_NETWORK);
+
+    if(network == null || network.isEmpty()) {
+      network = defaultNetwork;
+    }
+
+    validateContainerNetworkType(network);
 
     if (imageName == null) {
       throw new ContainerExecutionException(ENV_DOCKER_CONTAINER_IMAGE
@@ -276,6 +320,8 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     @SuppressWarnings("unchecked")
     List<String> logDirs = ctx.getExecutionAttribute(LOG_DIRS);
     @SuppressWarnings("unchecked")
+    List<String> filecacheDirs = ctx.getExecutionAttribute(FILECACHE_DIRS);
+    @SuppressWarnings("unchecked")
     List<String> containerLocalDirs = ctx.getExecutionAttribute(
         CONTAINER_LOCAL_DIRS);
     @SuppressWarnings("unchecked")
@@ -284,6 +330,9 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     @SuppressWarnings("unchecked")
     Map<Path, List<String>> localizedResources = ctx.getExecutionAttribute(
         LOCALIZED_RESOURCES);
+    @SuppressWarnings("unchecked")
+    List<String> userLocalDirs = ctx.getExecutionAttribute(USER_LOCAL_DIRS);
+
     Set<String> capabilities = new HashSet<>(Arrays.asList(conf.getStrings(
         YarnConfiguration.NM_DOCKER_CONTAINER_CAPABILITIES,
         YarnConfiguration.DEFAULT_NM_DOCKER_CONTAINER_CAPABILITIES)));
@@ -293,13 +342,15 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
         runAsUser, imageName)
         .detachOnRun()
         .setContainerWorkDir(containerWorkDir.toString())
-        .setNetworkType("host")
+        .setNetworkType(network)
         .setCapabilities(capabilities)
         .addMountLocation("/etc/passwd", "/etc/password:ro");
     List<String> allDirs = new ArrayList<>(containerLocalDirs);
 
+    allDirs.addAll(filecacheDirs);
     allDirs.add(containerWorkDir.toString());
     allDirs.addAll(containerLogDirs);
+    allDirs.addAll(userLocalDirs);
     for (String dir: allDirs) {
       runCommand.addMountLocation(dir, dir);
     }
@@ -374,6 +425,10 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     if (tcCommandFile != null) {
       launchOp.appendArgs(tcCommandFile);
     }
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Launching container with cmd: " + runCommand
+          .getCommandWithArguments());
+    }
 
     try {
       privilegedOperationExecutor.executePrivilegedOperation(null,
@@ -381,6 +436,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
           false, false);
     } catch (PrivilegedOperationException e) {
       LOG.warn("Launch container failed. Exception: ", e);
+      LOG.info("Docker command used: " + runCommand.getCommandWithArguments());
 
       throw new ContainerExecutionException("Launch container failed", e
           .getExitCode(), e.getOutput(), e.getErrorOutput());
@@ -391,26 +447,39 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
   public void signalContainer(ContainerRuntimeContext ctx)
       throws ContainerExecutionException {
     Container container = ctx.getContainer();
-    PrivilegedOperation signalOp = new PrivilegedOperation(
-        PrivilegedOperation.OperationType.SIGNAL_CONTAINER);
+    ContainerExecutor.Signal signal = ctx.getExecutionAttribute(SIGNAL);
 
-    signalOp.appendArgs(ctx.getExecutionAttribute(RUN_AS_USER),
-        ctx.getExecutionAttribute(USER),
-        Integer.toString(PrivilegedOperation
-            .RunAsUserCommand.SIGNAL_CONTAINER.getValue()),
-        ctx.getExecutionAttribute(PID),
-        Integer.toString(ctx.getExecutionAttribute(SIGNAL).getValue()));
+    PrivilegedOperation privOp = null;
+    // Handle liveliness checks, send null signal to pid
+    if(ContainerExecutor.Signal.NULL.equals(signal)) {
+      privOp = new PrivilegedOperation(
+          PrivilegedOperation.OperationType.SIGNAL_CONTAINER);
+      privOp.appendArgs(ctx.getExecutionAttribute(RUN_AS_USER),
+          ctx.getExecutionAttribute(USER),
+          Integer.toString(PrivilegedOperation.RunAsUserCommand
+              .SIGNAL_CONTAINER.getValue()),
+          ctx.getExecutionAttribute(PID),
+          Integer.toString(ctx.getExecutionAttribute(SIGNAL).getValue()));
+
+    // All other signals handled as docker stop
+    } else {
+      String containerId = ctx.getContainer().getContainerId().toString();
+      DockerStopCommand stopCommand = new DockerStopCommand(containerId);
+      String commandFile = dockerClient.writeCommandToTempFile(stopCommand,
+          containerId);
+      privOp = new PrivilegedOperation(
+          PrivilegedOperation.OperationType.RUN_DOCKER_CMD);
+      privOp.appendArgs(commandFile);
+    }
+
+    //Some failures here are acceptable. Let the calling executor decide.
+    privOp.disableFailureLogging();
 
     try {
-      PrivilegedOperationExecutor executor = PrivilegedOperationExecutor
-          .getInstance(conf);
-
-      executor.executePrivilegedOperation(null,
-          signalOp, null, container.getLaunchContext().getEnvironment(),
-          false, true);
+      privilegedOperationExecutor.executePrivilegedOperation(null,
+          privOp, null, container.getLaunchContext().getEnvironment(),
+          false, false);
     } catch (PrivilegedOperationException e) {
-      LOG.warn("Signal container failed. Exception: ", e);
-
       throw new ContainerExecutionException("Signal container failed", e
           .getExitCode(), e.getOutput(), e.getErrorOutput());
     }

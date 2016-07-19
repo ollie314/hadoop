@@ -43,10 +43,10 @@ All of the shell commands will accept a common set of options. For some commands
 | `--daemon mode` | If the command supports daemonization (e.g., `hdfs namenode`), execute in the appropriate mode. Supported modes are `start` to start the process in daemon mode, `stop` to stop the process, and `status` to determine the active status of the process. `status` will return an [LSB-compliant](http://refspecs.linuxbase.org/LSB_3.0.0/LSB-generic/LSB-generic/iniscrptact.html) result code. If no option is provided, commands that support daemonization will run in the foreground. For commands that do not support daemonization, this option is ignored. |
 | `--debug` | Enables shell level configuration debugging information |
 | `--help` | Shell script usage information. |
-| `--hostnames` | When `--slaves` is used, override the slaves file with a space delimited list of hostnames where to execute a multi-host subcommand. If `--slaves` is not used, this option is ignored. |
-| `--hosts` | When `--slaves` is used, override the slaves file with another file that contains a list of hostnames where to execute a multi-host subcommand.  If `--slaves` is not used, this option is ignored. |
+| `--hostnames` | When `--workers` is used, override the workers file with a space delimited list of hostnames where to execute a multi-host subcommand. If `--workers` is not used, this option is ignored. |
+| `--hosts` | When `--workers` is used, override the workers file with another file that contains a list of hostnames where to execute a multi-host subcommand.  If `--workers` is not used, this option is ignored. |
 | `--loglevel loglevel` | Overrides the log level. Valid log levels are FATAL, ERROR, WARN, INFO, DEBUG, and TRACE. Default is INFO. |
-| `--slaves` | If possible, execute this command on all hosts in the `slaves` file. |
+| `--workers` | If possible, execute this command on all hosts in the `workers` file. |
 
 ### Generic Options
 
@@ -229,17 +229,37 @@ Commands useful for administrators of a hadoop cluster.
 
 Usage:
 
-    hadoop daemonlog -getlevel <host:httpport> <classname>
-    hadoop daemonlog -setlevel <host:httpport> <classname> <level>
+    hadoop daemonlog -getlevel <host:port> <classname> [-protocol (http|https)]
+    hadoop daemonlog -setlevel <host:port> <classname> <level> [-protocol (http|https)]
 
 | COMMAND\_OPTION | Description |
 |:---- |:---- |
-| `-getlevel` *host:httpport* *classname* | Prints the log level of the log identified by a qualified *classname*, in the daemon running at *host:httpport*. This command internally connects to `http://<host:httpport>/logLevel?log=<classname>` |
-| `-setlevel` *host:httpport* *classname* *level* | Sets the log level of the log identified by a qualified *classname*, in the daemon running at *host:httpport*. This command internally connects to `http://<host:httpport>/logLevel?log=<classname>&level=<level>` |
+| `-getlevel` *host:port* *classname* [-protocol (http|https)] | Prints the log level of the log identified by a qualified *classname*, in the daemon running at *host:port*. The `-protocol` flag specifies the protocol for connection. |
+| `-setlevel` *host:port* *classname* *level* [-protocol (http|https)] | Sets the log level of the log identified by a qualified *classname*, in the daemon running at *host:port*.  The `-protocol` flag specifies the protocol for connection. |
 
-Get/Set the log level for a Log identified by a qualified class name in the daemon.
+Get/Set the log level for a Log identified by a qualified class name in the daemon dynamically.
+By default, the command sends a HTTP request, but this can be overridden by using argument `-protocol https` to send a HTTPS request.
 
-	Example: $ bin/hadoop daemonlog -setlevel 127.0.0.1:9870 org.apache.hadoop.hdfs.server.namenode.NameNode DEBUG
+Example:
+
+    $ bin/hadoop daemonlog -setlevel 127.0.0.1:9870 org.apache.hadoop.hdfs.server.namenode.NameNode DEBUG
+    $ bin/hadoop daemonlog -getlevel 127.0.0.1:9871 org.apache.hadoop.hdfs.server.namenode.NameNode DEBUG -protocol https
+
+Note that the setting is not permanent and will be reset when the daemon is restarted.
+This command works by sending a HTTP/HTTPS request to the daemon's internal Jetty servlet, so it supports the following daemons:
+
+* HDFS
+    * name node
+    * secondary name node
+    * data node
+    * journal node
+* YARN
+    * resource manager
+    * node manager
+    * Timeline server
+
+However, the command does not support KMS server, because its web interface is based on Tomcat, which does not support the servlet.
+
 
 Files
 -----

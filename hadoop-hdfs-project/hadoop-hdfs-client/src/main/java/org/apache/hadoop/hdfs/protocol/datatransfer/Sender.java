@@ -266,7 +266,8 @@ public class Sender implements DataTransferProtocol {
 
   @Override
   public void blockGroupChecksum(StripedBlockInfo stripedBlockInfo,
-         Token<BlockTokenIdentifier> blockToken) throws IOException {
+      Token<BlockTokenIdentifier> blockToken, long requestedNumBytes)
+          throws IOException {
     OpBlockGroupChecksumProto proto = OpBlockGroupChecksumProto.newBuilder()
         .setHeader(DataTransferProtoUtil.buildBaseHeader(
             stripedBlockInfo.getBlock(), blockToken))
@@ -274,8 +275,11 @@ public class Sender implements DataTransferProtocol {
             stripedBlockInfo.getDatanodes()))
         .addAllBlockTokens(PBHelperClient.convert(
             stripedBlockInfo.getBlockTokens()))
+        .addAllBlockIndices(PBHelperClient
+            .convertBlockIndices(stripedBlockInfo.getBlockIndices()))
         .setEcPolicy(PBHelperClient.convertErasureCodingPolicy(
             stripedBlockInfo.getErasureCodingPolicy()))
+        .setRequestedNumBytes(requestedNumBytes)
         .build();
 
     send(out, Op.BLOCK_GROUP_CHECKSUM, proto);

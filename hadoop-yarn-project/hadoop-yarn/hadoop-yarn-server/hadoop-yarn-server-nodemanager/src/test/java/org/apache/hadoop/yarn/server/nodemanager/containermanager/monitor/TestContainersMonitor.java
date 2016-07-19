@@ -210,7 +210,7 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
     ContainerId cId = ContainerId.newContainerId(appAttemptId, 0);
 
     URL resource_alpha =
-        ConverterUtils.getYarnUrlFromPath(localFS
+        URL.fromPath(localFS
             .makeQualified(new Path(scriptFile.getAbsolutePath())));
     LocalResource rsrc_alpha =
         recordFactory.newRecordInstance(LocalResource.class);
@@ -228,7 +228,7 @@ public class TestContainersMonitor extends BaseContainerManagerTest {
     commands.add("/bin/bash");
     commands.add(scriptFile.getAbsolutePath());
     containerLaunchContext.setCommands(commands);
-    Resource r = BuilderUtils.newResource(8 * 1024 * 1024, 1);
+    Resource r = BuilderUtils.newResource(0, 0);
     ContainerTokenIdentifier containerIdentifier =
         new ContainerTokenIdentifier(cId, context.getNodeId().toString(), user,
           r, System.currentTimeMillis() + 120000, 123, DUMMY_RM_IDENTIFIER,

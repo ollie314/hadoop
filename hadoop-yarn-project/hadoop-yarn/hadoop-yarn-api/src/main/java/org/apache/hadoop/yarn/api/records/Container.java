@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.api.records;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
+import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
@@ -66,6 +67,15 @@ public abstract class Container implements Comparable<Container> {
   public static Container newInstance(ContainerId containerId, NodeId nodeId,
       String nodeHttpAddress, Resource resource, Priority priority,
       Token containerToken) {
+    return newInstance(containerId, nodeId, nodeHttpAddress, resource, priority,
+        containerToken, ExecutionType.GUARANTEED);
+  }
+
+  @Private
+  @Unstable
+  public static Container newInstance(ContainerId containerId, NodeId nodeId,
+      String nodeHttpAddress, Resource resource, Priority priority,
+      Token containerToken, ExecutionType executionType) {
     Container container = Records.newRecord(Container.class);
     container.setId(containerId);
     container.setNodeId(nodeId);
@@ -73,6 +83,7 @@ public abstract class Container implements Comparable<Container> {
     container.setResource(resource);
     container.setPriority(priority);
     container.setContainerToken(containerToken);
+    container.setExecutionType(executionType);
     return container;
   }
 
@@ -163,4 +174,64 @@ public abstract class Container implements Comparable<Container> {
   @Private
   @Unstable
   public abstract void setContainerToken(Token containerToken);
+
+  /**
+   * Get the <code>ExecutionType</code> for the container.
+   * @return <code>ExecutionType</code> for the container.
+   */
+  @Private
+  @Unstable
+  public abstract ExecutionType getExecutionType();
+
+  /**
+   * Set the <code>ExecutionType</code> for the container.
+   * @param executionType ExecutionType
+   */
+  @Private
+  @Unstable
+  public abstract void setExecutionType(ExecutionType executionType);
+
+  /**
+   * Get the optional <em>ID</em> corresponding to the original {@code
+   * ResourceRequest{@link #getAllocationRequestId()}}s which is satisfied by
+   * this allocated {@code Container}.
+   * <p>
+   * The scheduler may return multiple {@code AllocateResponse}s corresponding
+   * to the same ID as and when scheduler allocates {@code Container}s.
+   * <b>Applications</b> can continue to completely ignore the returned ID in
+   * the response and use the allocation for any of their outstanding requests.
+   * <p>
+   *
+   * @return the <em>ID</em> corresponding to the original  allocation request
+   * which is satisfied by this allocation.
+   */
+  @Public
+  @Evolving
+  public long getAllocationRequestId() {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Set the optional <em>ID</em> corresponding to the original {@code
+   * ResourceRequest{@link #setAllocationRequestId(long)}
+   * etAllocationRequestId()}}s which is satisfied by this allocated {@code
+   * Container}.
+   * <p>
+   * The scheduler may return multiple {@code AllocateResponse}s corresponding
+   * to the same ID as and when scheduler allocates {@code Container}s.
+   * <b>Applications</b> can continue to completely ignore the returned ID in
+   * the response and use the allocation for any of their outstanding requests.
+   * If the ID is not set, scheduler will continue to work as previously and all
+   * allocated {@code Container}(s) will have the default ID, -1.
+   * <p>
+   *
+   * @param allocationRequestID the <em>ID</em> corresponding to the original
+   *                            allocation request which is satisfied by this
+   *                            allocation.
+   */
+  @Private
+  @Evolving
+  public void setAllocationRequestId(long allocationRequestID) {
+    throw new UnsupportedOperationException();
+  }
 }

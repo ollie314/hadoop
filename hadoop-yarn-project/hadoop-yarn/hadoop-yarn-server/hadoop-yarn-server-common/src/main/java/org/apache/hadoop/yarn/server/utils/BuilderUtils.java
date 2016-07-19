@@ -64,7 +64,6 @@ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -113,7 +112,7 @@ public class BuilderUtils {
   public static LocalResource newLocalResource(URI uri,
       LocalResourceType type, LocalResourceVisibility visibility, long size,
       long timestamp, boolean shouldBeUploadedToSharedCache) {
-    return newLocalResource(ConverterUtils.getYarnUrlFromURI(uri), type,
+    return newLocalResource(URL.fromURI(uri), type,
         visibility, size, timestamp, shouldBeUploadedToSharedCache);
   }
 
@@ -236,7 +235,7 @@ public class BuilderUtils {
 
   public static Container newContainer(ContainerId containerId, NodeId nodeId,
       String nodeHttpAddress, Resource resource, Priority priority,
-      Token containerToken) {
+      Token containerToken, ExecutionType executionType) {
     Container container = recordFactory.newRecordInstance(Container.class);
     container.setId(containerId);
     container.setNodeId(nodeId);
@@ -244,7 +243,15 @@ public class BuilderUtils {
     container.setResource(resource);
     container.setPriority(priority);
     container.setContainerToken(containerToken);
+    container.setExecutionType(executionType);
     return container;
+  }
+
+  public static Container newContainer(ContainerId containerId, NodeId nodeId,
+      String nodeHttpAddress, Resource resource, Priority priority,
+      Token containerToken) {
+    return newContainer(containerId, nodeId, nodeHttpAddress, resource,
+        priority, containerToken, ExecutionType.GUARANTEED);
   }
 
   public static <T extends Token> T newToken(Class<T> tokenClass,
@@ -434,9 +441,9 @@ public class BuilderUtils {
     return report;
   }
 
-  public static Resource newResource(int memory, int vCores) {
+  public static Resource newResource(long memory, int vCores) {
     Resource resource = recordFactory.newRecordInstance(Resource.class);
-    resource.setMemory(memory);
+    resource.setMemorySize(memory);
     resource.setVirtualCores(vCores);
     return resource;
   }

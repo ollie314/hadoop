@@ -741,9 +741,9 @@ public abstract class YarnClient extends AbstractService {
    *
    * @return cluster node labels collection
    * @throws YarnException when there is a failure in
-   *           {@see ApplicationClientProtocol}
+   *           {@link ApplicationClientProtocol}
    * @throws IOException when there is a failure in
-   *           {@see ApplicationClientProtocol}
+   *           {@link ApplicationClientProtocol}
    */
   @Public
   @Unstable
@@ -777,6 +777,6 @@ public abstract class YarnClient extends AbstractService {
    * @throws YarnException
    * @throws IOException
    */
-  public abstract void signalContainer(ContainerId containerId,
+  public abstract void signalToContainer(ContainerId containerId,
       SignalContainerCommand command) throws YarnException, IOException;
 }

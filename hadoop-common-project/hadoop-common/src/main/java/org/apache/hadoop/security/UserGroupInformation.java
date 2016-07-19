@@ -103,7 +103,7 @@ public class UserGroupInformation {
    * @param immediate true if we should login without waiting for ticket window
    */
   @VisibleForTesting
-  static void setShouldRenewImmediatelyForTests(boolean immediate) {
+  public static void setShouldRenewImmediatelyForTests(boolean immediate) {
     shouldRenewImmediatelyForTests = immediate;
   }
 
@@ -339,7 +339,7 @@ public class UserGroupInformation {
   
   @InterfaceAudience.Private
   @VisibleForTesting
-  static void reset() {
+  public static void reset() {
     authenticationMethod = null;
     conf = null;
     groups = null;
@@ -689,7 +689,7 @@ public class UserGroupInformation {
    * 
    * @param user                The principal name to load from the ticket
    *                            cache
-   * @param ticketCache     the path to the ticket cache file
+   * @param ticketCachePath     the path to the ticket cache file
    *
    * @throws IOException        if the kerberos login fails
    */
@@ -749,7 +749,7 @@ public class UserGroupInformation {
   /**
    * Create a UserGroupInformation from a Subject with Kerberos principal.
    *
-   * @param subject             The KerberosPrincipal to use in UGI
+   * @param user                The KerberosPrincipal to use in UGI
    *
    * @throws IOException        if the kerberos login fails
    */

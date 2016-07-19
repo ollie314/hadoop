@@ -48,6 +48,7 @@ import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskType;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
+import org.apache.hadoop.mapreduce.v2.app.MRAppMaster;
 import org.apache.hadoop.mapreduce.v2.app.client.ClientService;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobCounterUpdateEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobDiagnosticsUpdateEvent;
@@ -371,10 +372,10 @@ public class RMContainerAllocator extends RMContainerRequestor
           eventHandler.handle(new JobHistoryEvent(jobId,
             new NormalizedResourceEvent(
               org.apache.hadoop.mapreduce.TaskType.MAP, mapResourceRequest
-                .getMemory())));
+                .getMemorySize())));
           LOG.info("mapResourceRequest:" + mapResourceRequest);
-          if (mapResourceRequest.getMemory() > supportedMaxContainerCapability
-            .getMemory()
+          if (mapResourceRequest.getMemorySize() > supportedMaxContainerCapability
+            .getMemorySize()
               || mapResourceRequest.getVirtualCores() > supportedMaxContainerCapability
                 .getVirtualCores()) {
             String diagMsg =
@@ -388,7 +389,7 @@ public class RMContainerAllocator extends RMContainerRequestor
           }
         }
         // set the resources
-        reqEvent.getCapability().setMemory(mapResourceRequest.getMemory());
+        reqEvent.getCapability().setMemorySize(mapResourceRequest.getMemorySize());
         reqEvent.getCapability().setVirtualCores(
           mapResourceRequest.getVirtualCores());
         scheduledRequests.addMap(reqEvent);//maps are immediately scheduled
@@ -398,10 +399,10 @@ public class RMContainerAllocator extends RMContainerRequestor
           eventHandler.handle(new JobHistoryEvent(jobId,
             new NormalizedResourceEvent(
               org.apache.hadoop.mapreduce.TaskType.REDUCE,
-              reduceResourceRequest.getMemory())));
+              reduceResourceRequest.getMemorySize())));
           LOG.info("reduceResourceRequest:" + reduceResourceRequest);
-          if (reduceResourceRequest.getMemory() > supportedMaxContainerCapability
-            .getMemory()
+          if (reduceResourceRequest.getMemorySize() > supportedMaxContainerCapability
+            .getMemorySize()
               || reduceResourceRequest.getVirtualCores() > supportedMaxContainerCapability
                 .getVirtualCores()) {
             String diagMsg =
@@ -416,7 +417,7 @@ public class RMContainerAllocator extends RMContainerRequestor
           }
         }
         // set the resources
-        reqEvent.getCapability().setMemory(reduceResourceRequest.getMemory());
+        reqEvent.getCapability().setMemorySize(reduceResourceRequest.getMemorySize());
         reqEvent.getCapability().setVirtualCores(
           reduceResourceRequest.getVirtualCores());
         if (reqEvent.getEarlierAttemptFailed()) {
@@ -821,6 +822,15 @@ public class RMContainerAllocator extends RMContainerRequestor
 
     handleUpdatedNodes(response);
     handleJobPriorityChange(response);
+    // handle receiving the timeline collector address for this app
+    String collectorAddr = response.getCollectorAddr();
+    MRAppMaster.RunningAppContext appContext =
+        (MRAppMaster.RunningAppContext)this.getContext();
+    if (collectorAddr != null && !collectorAddr.isEmpty()
+        && appContext.getTimelineClient() != null) {
+      appContext.getTimelineClient().setTimelineServiceAddress(
+          response.getCollectorAddr());
+    }
 
     for (ContainerStatus cont : finishedContainers) {
       LOG.info("Received completed container " + cont.getContainerId());

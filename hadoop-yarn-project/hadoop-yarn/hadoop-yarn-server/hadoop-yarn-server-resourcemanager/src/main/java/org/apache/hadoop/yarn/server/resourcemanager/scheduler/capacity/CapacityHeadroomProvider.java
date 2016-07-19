@@ -65,8 +65,8 @@ public class CapacityHeadroomProvider {
       }
     }
     // Corner case to deal with applications being slightly over-limit
-    if (headroom.getMemory() < 0) {
-      headroom.setMemory(0);
+    if (headroom.getMemorySize() < 0) {
+      headroom.setMemorySize(0);
     }
     return headroom;
   }

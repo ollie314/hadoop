@@ -454,20 +454,23 @@ final class FileChecksumHelper {
     private boolean checksumBlockGroup(
         LocatedStripedBlock blockGroup) throws IOException {
       ExtendedBlock block = blockGroup.getBlock();
+      long requestedNumBytes = block.getNumBytes();
       if (getRemaining() < block.getNumBytes()) {
-        block.setNumBytes(getRemaining());
+        requestedNumBytes = getRemaining();
       }
-      setRemaining(getRemaining() - block.getNumBytes());
+      setRemaining(getRemaining() - requestedNumBytes);
 
       StripedBlockInfo stripedBlockInfo = new StripedBlockInfo(block,
-          blockGroup.getLocations(), blockGroup.getBlockTokens(), ecPolicy);
+          blockGroup.getLocations(), blockGroup.getBlockTokens(),
+          blockGroup.getBlockIndices(), ecPolicy);
       DatanodeInfo[] datanodes = blockGroup.getLocations();
 
       //try each datanode in the block group.
       boolean done = false;
       for (int j = 0; !done && j < datanodes.length; j++) {
         try {
-          tryDatanode(blockGroup, stripedBlockInfo, datanodes[j]);
+          tryDatanode(blockGroup, stripedBlockInfo, datanodes[j],
+              requestedNumBytes);
           done = true;
         } catch (InvalidBlockTokenException ibte) {
           if (bgIdx > getLastRetriedIndex()) {
@@ -495,7 +498,8 @@ final class FileChecksumHelper {
      */
     private void tryDatanode(LocatedStripedBlock blockGroup,
                              StripedBlockInfo stripedBlockInfo,
-                             DatanodeInfo datanode) throws IOException {
+                             DatanodeInfo datanode,
+                             long requestedNumBytes) throws IOException {
 
       try (IOStreamPair pair = getClient().connectToDN(datanode,
           getTimeout(), blockGroup.getBlockToken())) {
@@ -505,7 +509,7 @@ final class FileChecksumHelper {
 
         // get block MD5
         createSender(pair).blockGroupChecksum(stripedBlockInfo,
-            blockGroup.getBlockToken());
+            blockGroup.getBlockToken(), requestedNumBytes);
 
         BlockOpResponseProto reply = BlockOpResponseProto.parseFrom(
             PBHelperClient.vintPrefixed(pair.in));

@@ -306,12 +306,14 @@ public abstract class Receiver implements DataTransferProtocol {
         PBHelperClient.convert(proto.getHeader().getBlock()),
         PBHelperClient.convert(proto.getDatanodes()),
         PBHelperClient.convertTokens(proto.getBlockTokensList()),
+        PBHelperClient.convertBlockIndices(proto.getBlockIndicesList()),
         PBHelperClient.convertErasureCodingPolicy(proto.getEcPolicy())
     );
 
     try {
       blockGroupChecksum(stripedBlockInfo,
-          PBHelperClient.convert(proto.getHeader().getToken()));
+          PBHelperClient.convert(proto.getHeader().getToken()),
+          proto.getRequestedNumBytes());
     } finally {
       if (traceScope != null) {
         traceScope.close();

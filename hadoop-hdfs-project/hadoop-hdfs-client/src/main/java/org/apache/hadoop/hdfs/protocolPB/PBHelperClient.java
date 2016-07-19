@@ -853,6 +853,22 @@ public class PBHelperClient {
     return results;
   }
 
+  public static List<Integer> convertBlockIndices(byte[] blockIndices) {
+    List<Integer> results = new ArrayList<>(blockIndices.length);
+    for (byte bt : blockIndices) {
+      results.add(Integer.valueOf(bt));
+    }
+    return results;
+  }
+
+  public static byte[] convertBlockIndices(List<Integer> blockIndices) {
+    byte[] blkIndices = new byte[blockIndices.size()];
+    for (int i = 0; i < blockIndices.size(); i++) {
+      blkIndices[i] = (byte) blockIndices.get(i).intValue();
+    }
+    return blkIndices;
+  }
+
   public static BlockStoragePolicy convert(BlockStoragePolicyProto proto) {
     List<StorageTypeProto> cList = proto.getCreationPolicy()
         .getStorageTypesList();
@@ -1187,6 +1203,10 @@ public class PBHelperClient {
     if (proto.hasLimit())  {
       info.setLimit(proto.getLimit());
     }
+    if (proto.hasDefaultReplication()) {
+      info.setDefaultReplication(Shorts.checkedCast(
+          proto.getDefaultReplication()));
+    }
     if (proto.hasMaxRelativeExpiry()) {
       info.setMaxRelativeExpiryMs(proto.getMaxRelativeExpiry());
     }
@@ -1217,6 +1237,9 @@ public class PBHelperClient {
     }
     if (info.getLimit() != null) {
       builder.setLimit(info.getLimit());
+    }
+    if (info.getDefaultReplication() != null) {
+      builder.setDefaultReplication(info.getDefaultReplication());
     }
     if (info.getMaxRelativeExpiryMs() != null) {
       builder.setMaxRelativeExpiry(info.getMaxRelativeExpiryMs());

@@ -23,10 +23,12 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationException;
@@ -47,7 +49,7 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.ArrayList;
+import java.util.*;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -64,37 +66,40 @@ public class TestDockerContainerRuntime {
   private static final Log LOG = LogFactory
       .getLog(TestDockerContainerRuntime.class);
   private Configuration conf;
-  PrivilegedOperationExecutor mockExecutor;
-  CGroupsHandler mockCGroupsHandler;
-  String containerId;
-  Container container;
-  ContainerId cId;
-  ContainerLaunchContext context;
-  HashMap<String, String> env;
-  String image;
-  String runAsUser;
-  String user;
-  String appId;
-  String containerIdStr = containerId;
-  Path containerWorkDir;
-  Path nmPrivateContainerScriptPath;
-  Path nmPrivateTokensPath;
-  Path pidFilePath;
-  List<String> localDirs;
-  List<String> logDirs;
-  List<String> containerLocalDirs;
-  List<String> containerLogDirs;
-  Map<Path,List<String>> localizedResources;
-  String resourcesOptions;
-  ContainerRuntimeContext.Builder builder;
-  String submittingUser = "anakin";
-  String whitelistedUser = "yoda";
+  private PrivilegedOperationExecutor mockExecutor;
+  private CGroupsHandler mockCGroupsHandler;
+  private String containerId;
+  private Container container;
+  private ContainerId cId;
+  private ContainerLaunchContext context;
+  private HashMap<String, String> env;
+  private String image;
+  private String runAsUser;
+  private String user;
+  private String appId;
+  private String containerIdStr = containerId;
+  private Path containerWorkDir;
+  private Path nmPrivateContainerScriptPath;
+  private Path nmPrivateTokensPath;
+  private Path pidFilePath;
+  private List<String> localDirs;
+  private List<String> logDirs;
+  private List<String> filecacheDirs;
+  private List<String> userLocalDirs;
+  private List<String> containerLocalDirs;
+  private List<String> containerLogDirs;
+  private Map<Path, List<String>> localizedResources;
+  private String resourcesOptions;
+  private ContainerRuntimeContext.Builder builder;
+  private final String submittingUser = "anakin";
+  private final String whitelistedUser = "yoda";
+  private String[] testCapabilities;
+  private final String signalPid = "1234";
 
   @Before
   public void setup() {
     String tmpPath = new StringBuffer(System.getProperty("test.build.data"))
-        .append
-        ('/').append("hadoop.tmp.dir").toString();
+        .append('/').append("hadoop.tmp.dir").toString();
 
     conf = new Configuration();
     conf.set("hadoop.tmp.dir", tmpPath);
@@ -126,17 +131,25 @@ public class TestDockerContainerRuntime {
     pidFilePath = new Path("/test_pid_file_path");
     localDirs = new ArrayList<>();
     logDirs = new ArrayList<>();
+    filecacheDirs = new ArrayList<>();
     resourcesOptions = "cgroups=none";
+    userLocalDirs = new ArrayList<>();
     containerLocalDirs = new ArrayList<>();
     containerLogDirs = new ArrayList<>();
     localizedResources = new HashMap<>();
 
     localDirs.add("/test_local_dir");
     logDirs.add("/test_log_dir");
+    filecacheDirs.add("/test_filecache_dir");
+    userLocalDirs.add("/test_user_local_dir");
     containerLocalDirs.add("/test_container_local_dir");
     containerLogDirs.add("/test_container_log_dir");
     localizedResources.put(new Path("/test_local_dir/test_resource_file"),
         Collections.singletonList("test_dir/test_resource_file"));
+
+    testCapabilities = new String[] {"NET_BIND_SERVICE", "SYS_CHROOT"};
+    conf.setStrings(YarnConfiguration.NM_DOCKER_CONTAINER_CAPABILITIES,
+        testCapabilities);
 
     builder = new ContainerRuntimeContext
         .Builder(container);
@@ -152,6 +165,8 @@ public class TestDockerContainerRuntime {
         .setExecutionAttribute(PID_FILE_PATH, pidFilePath)
         .setExecutionAttribute(LOCAL_DIRS, localDirs)
         .setExecutionAttribute(LOG_DIRS, logDirs)
+        .setExecutionAttribute(FILECACHE_DIRS, filecacheDirs)
+        .setExecutionAttribute(USER_LOCAL_DIRS, userLocalDirs)
         .setExecutionAttribute(CONTAINER_LOCAL_DIRS, containerLocalDirs)
         .setExecutionAttribute(CONTAINER_LOG_DIRS, containerLogDirs)
         .setExecutionAttribute(LOCALIZED_RESOURCES, localizedResources)
@@ -175,7 +190,7 @@ public class TestDockerContainerRuntime {
   }
 
   @SuppressWarnings("unchecked")
-  private PrivilegedOperation capturePrivilegedOperationAndVerifyArgs()
+  private PrivilegedOperation capturePrivilegedOperation()
       throws PrivilegedOperationException {
     ArgumentCaptor<PrivilegedOperation> opCaptor = ArgumentCaptor.forClass(
         PrivilegedOperation.class);
@@ -187,7 +202,18 @@ public class TestDockerContainerRuntime {
         .executePrivilegedOperation(anyList(), opCaptor.capture(), any(
             File.class), any(Map.class), eq(false), eq(false));
 
-    PrivilegedOperation op = opCaptor.getValue();
+    //verification completed. we need to isolate specific invications.
+    // hence, reset mock here
+    Mockito.reset(mockExecutor);
+
+    return opCaptor.getValue();
+  }
+
+  @SuppressWarnings("unchecked")
+  private PrivilegedOperation capturePrivilegedOperationAndVerifyArgs()
+      throws PrivilegedOperationException {
+
+    PrivilegedOperation op = capturePrivilegedOperation();
 
     Assert.assertEquals(PrivilegedOperation.OperationType
         .LAUNCH_DOCKER_CONTAINER, op.getOperationType());
@@ -217,24 +243,7 @@ public class TestDockerContainerRuntime {
     return op;
   }
 
-  @Test
-  public void testDockerContainerLaunch()
-      throws ContainerExecutionException, PrivilegedOperationException,
-      IOException {
-    DockerLinuxContainerRuntime runtime = new DockerLinuxContainerRuntime(
-        mockExecutor, mockCGroupsHandler);
-    runtime.initialize(conf);
-
-    String[] testCapabilities = {"NET_BIND_SERVICE", "SYS_CHROOT"};
-
-    conf.setStrings(YarnConfiguration.NM_DOCKER_CONTAINER_CAPABILITIES,
-        testCapabilities);
-    runtime.launchContainer(builder.build());
-
-    PrivilegedOperation op = capturePrivilegedOperationAndVerifyArgs();
-    List<String> args = op.getArguments();
-    String dockerCommandFile = args.get(11);
-
+  private String getExpectedTestCapabilitiesArgumentString()  {
     /* Ordering of capabilities depends on HashSet ordering. */
     Set<String> capabilitySet = new HashSet<>(Arrays.asList(testCapabilities));
     StringBuilder expectedCapabilitiesString = new StringBuilder(
@@ -245,28 +254,254 @@ public class TestDockerContainerRuntime {
           .append(" ");
     }
 
+    return expectedCapabilitiesString.toString();
+  }
+
+  @Test
+  public void testDockerContainerLaunch()
+      throws ContainerExecutionException, PrivilegedOperationException,
+      IOException {
+    DockerLinuxContainerRuntime runtime = new DockerLinuxContainerRuntime(
+        mockExecutor, mockCGroupsHandler);
+    runtime.initialize(conf);
+    runtime.launchContainer(builder.build());
+
+    PrivilegedOperation op = capturePrivilegedOperationAndVerifyArgs();
+    List<String> args = op.getArguments();
+    String dockerCommandFile = args.get(11);
+
     //This is the expected docker invocation for this case
     StringBuffer expectedCommandTemplate = new StringBuffer("run --name=%1$s ")
         .append("--user=%2$s -d ")
         .append("--workdir=%3$s ")
         .append("--net=host ")
-        .append(expectedCapabilitiesString)
+        .append(getExpectedTestCapabilitiesArgumentString())
         .append("-v /etc/passwd:/etc/password:ro ")
         .append("-v %4$s:%4$s ")
         .append("-v %5$s:%5$s ")
         .append("-v %6$s:%6$s ")
-        .append("%7$s ")
-        .append("bash %8$s/launch_container.sh");
+        .append("-v %7$s:%7$s ")
+        .append("-v %8$s:%8$s ").append("%9$s ")
+        .append("bash %10$s/launch_container.sh");
 
-    String expectedCommand = String.format(expectedCommandTemplate.toString(),
-        containerId, runAsUser, containerWorkDir, containerLocalDirs.get(0),
-        containerWorkDir, containerLogDirs.get(0), image, containerWorkDir);
+    String expectedCommand = String
+        .format(expectedCommandTemplate.toString(), containerId, runAsUser,
+            containerWorkDir, containerLocalDirs.get(0), filecacheDirs.get(0),
+            containerWorkDir, containerLogDirs.get(0), userLocalDirs.get(0),
+            image, containerWorkDir);
 
     List<String> dockerCommands = Files.readAllLines(Paths.get
             (dockerCommandFile), Charset.forName("UTF-8"));
 
     Assert.assertEquals(1, dockerCommands.size());
     Assert.assertEquals(expectedCommand, dockerCommands.get(0));
+  }
+
+  @Test
+  public void testAllowedNetworksConfiguration() throws
+      ContainerExecutionException {
+    //the default network configuration should cause
+    // no exception should be thrown.
+
+    DockerLinuxContainerRuntime runtime =
+        new DockerLinuxContainerRuntime(mockExecutor, mockCGroupsHandler);
+    runtime.initialize(conf);
+
+    //invalid default network configuration - sdn2 is included in allowed
+    // networks
+
+    String[] networks = {"host", "none", "bridge", "sdn1"};
+    String invalidDefaultNetwork = "sdn2";
+
+    conf.setStrings(YarnConfiguration.NM_DOCKER_ALLOWED_CONTAINER_NETWORKS,
+        networks);
+    conf.set(YarnConfiguration.NM_DOCKER_DEFAULT_CONTAINER_NETWORK,
+        invalidDefaultNetwork);
+
+    try {
+      runtime =
+          new DockerLinuxContainerRuntime(mockExecutor, mockCGroupsHandler);
+      runtime.initialize(conf);
+      Assert.fail("Invalid default network configuration should did not "
+          + "trigger initialization failure.");
+    } catch (ContainerExecutionException e) {
+      LOG.info("Caught expected exception : " + e);
+    }
+
+    //valid default network configuration - sdn1 is included in allowed
+    // networks - no exception should be thrown.
+
+    String validDefaultNetwork = "sdn1";
+
+    conf.set(YarnConfiguration.NM_DOCKER_DEFAULT_CONTAINER_NETWORK,
+        validDefaultNetwork);
+    runtime =
+        new DockerLinuxContainerRuntime(mockExecutor, mockCGroupsHandler);
+    runtime.initialize(conf);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testContainerLaunchWithNetworkingDefaults()
+      throws ContainerExecutionException, IOException,
+      PrivilegedOperationException {
+    DockerLinuxContainerRuntime runtime =
+        new DockerLinuxContainerRuntime(mockExecutor, mockCGroupsHandler);
+    runtime.initialize(conf);
+
+    Random randEngine = new Random();
+    String disallowedNetwork = "sdn" + Integer.toString(randEngine.nextInt());
+
+    try {
+      env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK",
+          disallowedNetwork);
+      runtime.launchContainer(builder.build());
+      Assert.fail("Network was expected to be disallowed: " +
+          disallowedNetwork);
+    } catch (ContainerExecutionException e) {
+      LOG.info("Caught expected exception: " + e);
+    }
+
+    int size = YarnConfiguration
+        .DEFAULT_NM_DOCKER_ALLOWED_CONTAINER_NETWORKS.length;
+    String allowedNetwork = YarnConfiguration
+        .DEFAULT_NM_DOCKER_ALLOWED_CONTAINER_NETWORKS[randEngine.nextInt(size)];
+    env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK",
+        allowedNetwork);
+
+    //this should cause no failures.
+
+    runtime.launchContainer(builder.build());
+    PrivilegedOperation op = capturePrivilegedOperationAndVerifyArgs();
+    List<String> args = op.getArguments();
+    String dockerCommandFile = args.get(11);
+
+    //This is the expected docker invocation for this case
+    StringBuffer expectedCommandTemplate =
+        new StringBuffer("run --name=%1$s ").append("--user=%2$s -d ")
+            .append("--workdir=%3$s ")
+            .append("--net=" + allowedNetwork + " ")
+            .append(getExpectedTestCapabilitiesArgumentString())
+            .append("-v /etc/passwd:/etc/password:ro ")
+            .append("-v %4$s:%4$s ").append("-v %5$s:%5$s ")
+            .append("-v %6$s:%6$s ").append("-v %7$s:%7$s ")
+            .append("-v %8$s:%8$s ").append("%9$s ")
+            .append("bash %10$s/launch_container.sh");
+
+    String expectedCommand = String
+        .format(expectedCommandTemplate.toString(), containerId, runAsUser,
+            containerWorkDir, containerLocalDirs.get(0), filecacheDirs.get(0),
+            containerWorkDir, containerLogDirs.get(0), userLocalDirs.get(0),
+            image, containerWorkDir);
+
+    List<String> dockerCommands = Files
+        .readAllLines(Paths.get(dockerCommandFile), Charset.forName("UTF-8"));
+
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals(expectedCommand, dockerCommands.get(0));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testContainerLaunchWithCustomNetworks()
+      throws ContainerExecutionException, IOException,
+      PrivilegedOperationException {
+    DockerLinuxContainerRuntime runtime =
+        new DockerLinuxContainerRuntime(mockExecutor, mockCGroupsHandler);
+
+    String customNetwork1 = "sdn1";
+    String customNetwork2 = "sdn2";
+    String customNetwork3 = "sdn3";
+
+    String[] networks = {"host", "none", "bridge", customNetwork1,
+        customNetwork2};
+
+    //customized set of allowed networks
+    conf.setStrings(YarnConfiguration.NM_DOCKER_ALLOWED_CONTAINER_NETWORKS,
+        networks);
+    //default network is "sdn1"
+    conf.set(YarnConfiguration.NM_DOCKER_DEFAULT_CONTAINER_NETWORK,
+        customNetwork1);
+
+    //this should cause no failures.
+    runtime.initialize(conf);
+    runtime.launchContainer(builder.build());
+    PrivilegedOperation op = capturePrivilegedOperationAndVerifyArgs();
+    List<String> args = op.getArguments();
+    String dockerCommandFile = args.get(11);
+
+    //This is the expected docker invocation for this case. customNetwork1
+    // ("sdn1") is the expected network to be used in this case
+    StringBuffer expectedCommandTemplate =
+        new StringBuffer("run --name=%1$s ").append("--user=%2$s -d ")
+            .append("--workdir=%3$s ")
+            .append("--net=" + customNetwork1 + " ")
+            .append(getExpectedTestCapabilitiesArgumentString())
+            .append("-v /etc/passwd:/etc/password:ro ")
+            .append("-v %4$s:%4$s ").append("-v %5$s:%5$s ")
+            .append("-v %6$s:%6$s ").append("-v %7$s:%7$s ")
+            .append("-v %8$s:%8$s ").append("%9$s ")
+            .append("bash %10$s/launch_container.sh");
+
+    String expectedCommand = String
+        .format(expectedCommandTemplate.toString(), containerId, runAsUser,
+            containerWorkDir, containerLocalDirs.get(0), filecacheDirs.get(0),
+            containerWorkDir, containerLogDirs.get(0), userLocalDirs.get(0),
+            image, containerWorkDir);
+
+    List<String> dockerCommands = Files
+        .readAllLines(Paths.get(dockerCommandFile), Charset.forName("UTF-8"));
+
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals(expectedCommand, dockerCommands.get(0));
+
+
+    //now set an explicit (non-default) allowedNetwork and ensure that it is
+    // used.
+
+    env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK",
+        customNetwork2);
+    runtime.launchContainer(builder.build());
+
+    op = capturePrivilegedOperationAndVerifyArgs();
+    args = op.getArguments();
+    dockerCommandFile = args.get(11);
+
+    //This is the expected docker invocation for this case. customNetwork2
+    // ("sdn2") is the expected network to be used in this case
+    expectedCommandTemplate =
+        new StringBuffer("run --name=%1$s ").append("--user=%2$s -d ")
+            .append("--workdir=%3$s ")
+            .append("--net=" + customNetwork2 + " ")
+            .append(getExpectedTestCapabilitiesArgumentString())
+            .append("-v /etc/passwd:/etc/password:ro ")
+            .append("-v %4$s:%4$s ").append("-v %5$s:%5$s ")
+            .append("-v %6$s:%6$s ").append("-v %7$s:%7$s ")
+            .append("-v %8$s:%8$s ").append("%9$s ")
+            .append("bash %10$s/launch_container.sh");
+
+    expectedCommand = String
+        .format(expectedCommandTemplate.toString(), containerId, runAsUser,
+            containerWorkDir, containerLocalDirs.get(0), filecacheDirs.get(0),
+            containerWorkDir, containerLogDirs.get(0), userLocalDirs.get(0),
+            image, containerWorkDir);
+    dockerCommands = Files
+        .readAllLines(Paths.get(dockerCommandFile), Charset.forName("UTF-8"));
+
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals(expectedCommand, dockerCommands.get(0));
+
+    //disallowed network should trigger a launch failure
+
+    env.put("YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK",
+        customNetwork3);
+    try {
+      runtime.launchContainer(builder.build());
+      Assert.fail("Disallowed network : " + customNetwork3
+          + "did not trigger launch failure.");
+    } catch (ContainerExecutionException e) {
+      LOG.info("Caught expected exception : " + e);
+    }
   }
 
   @Test
@@ -341,7 +576,6 @@ public class TestDockerContainerRuntime {
       LOG.info("Caught expected exception : " + e);
     }
   }
-
 
   @Test
   public void
@@ -558,6 +792,91 @@ public class TestDockerContainerRuntime {
         "run args : " + command,
         command.contains(" -v /test_local_dir/test_resource_file:test_mount2" +
             ":ro "));
+  }
+
+  @Test
+  public void testContainerLivelinessCheck()
+      throws ContainerExecutionException, PrivilegedOperationException {
+
+    DockerLinuxContainerRuntime runtime = new DockerLinuxContainerRuntime(
+        mockExecutor, mockCGroupsHandler);
+    builder.setExecutionAttribute(RUN_AS_USER, runAsUser)
+        .setExecutionAttribute(USER, user)
+        .setExecutionAttribute(PID, signalPid)
+        .setExecutionAttribute(SIGNAL, ContainerExecutor.Signal.NULL);
+    runtime.initialize(getConfigurationWithMockContainerExecutor());
+    runtime.signalContainer(builder.build());
+
+    PrivilegedOperation op = capturePrivilegedOperation();
+    Assert.assertEquals(op.getOperationType(),
+        PrivilegedOperation.OperationType.SIGNAL_CONTAINER);
+    Assert.assertEquals("run_as_user", op.getArguments().get(0));
+    Assert.assertEquals("user", op.getArguments().get(1));
+    Assert.assertEquals("2", op.getArguments().get(2));
+    Assert.assertEquals("1234", op.getArguments().get(3));
+    Assert.assertEquals("0", op.getArguments().get(4));
+  }
+
+  @Test
+  public void testDockerStopOnTermSignal()
+      throws ContainerExecutionException, PrivilegedOperationException,
+      IOException {
+    List<String> dockerCommands = getDockerCommandsForSignal(
+        ContainerExecutor.Signal.TERM);
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals("stop container_id", dockerCommands.get(0));
+  }
+
+  @Test
+  public void testDockerStopOnKillSignal()
+      throws ContainerExecutionException, PrivilegedOperationException,
+      IOException {
+    List<String> dockerCommands = getDockerCommandsForSignal(
+        ContainerExecutor.Signal.KILL);
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals("stop container_id", dockerCommands.get(0));
+  }
+
+  @Test
+  public void testDockerStopOnQuitSignal()
+      throws ContainerExecutionException, PrivilegedOperationException,
+      IOException {
+    List<String> dockerCommands = getDockerCommandsForSignal(
+        ContainerExecutor.Signal.QUIT);
+    Assert.assertEquals(1, dockerCommands.size());
+    Assert.assertEquals("stop container_id", dockerCommands.get(0));
+  }
+
+  private List<String> getDockerCommandsForSignal(
+      ContainerExecutor.Signal signal)
+      throws ContainerExecutionException, PrivilegedOperationException,
+      IOException {
+
+    DockerLinuxContainerRuntime runtime = new DockerLinuxContainerRuntime(
+        mockExecutor, mockCGroupsHandler);
+    builder.setExecutionAttribute(RUN_AS_USER, runAsUser)
+        .setExecutionAttribute(USER, user)
+        .setExecutionAttribute(PID, signalPid)
+        .setExecutionAttribute(SIGNAL, signal);
+    runtime.initialize(getConfigurationWithMockContainerExecutor());
+    runtime.signalContainer(builder.build());
+
+    PrivilegedOperation op = capturePrivilegedOperation();
+    Assert.assertEquals(op.getOperationType(),
+        PrivilegedOperation.OperationType.RUN_DOCKER_CMD);
+    String dockerCommandFile = op.getArguments().get(0);
+    return Files.readAllLines(Paths.get(dockerCommandFile),
+        Charset.forName("UTF-8"));
+  }
+
+  private Configuration getConfigurationWithMockContainerExecutor() {
+    File f = new File("./src/test/resources/mock-container-executor");
+    if(!FileUtil.canExecute(f)) {
+      FileUtil.setExecutable(f, true);
+    }
+    String executorPath = f.getAbsolutePath();
+    conf.set(YarnConfiguration.NM_LINUX_CONTAINER_EXECUTOR_PATH, executorPath);
+    return conf;
   }
 
 }

@@ -112,6 +112,9 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
   private boolean isAttemptRecovering;
 
   protected ResourceUsage attemptResourceUsage = new ResourceUsage();
+  /** Scheduled by a remote scheduler. */
+  protected ResourceUsage attemptResourceUsageAllocatedRemotely =
+      new ResourceUsage();
   private AtomicLong firstAllocationRequestSentTime = new AtomicLong(0);
   private AtomicLong firstContainerAllocatedTime = new AtomicLong(0);
 
@@ -288,6 +291,23 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return liveContainers.get(id);
   }
 
+  public synchronized void addRMContainer(
+      ContainerId id, RMContainer rmContainer) {
+    liveContainers.put(id, rmContainer);
+    if (rmContainer.isRemotelyAllocated()) {
+      this.attemptResourceUsageAllocatedRemotely.incUsed(
+          rmContainer.getAllocatedResource());
+    }
+  }
+
+  public synchronized void removeRMContainer(ContainerId containerId) {
+    RMContainer rmContainer = liveContainers.remove(containerId);
+    if (rmContainer != null && rmContainer.isRemotelyAllocated()) {
+      this.attemptResourceUsageAllocatedRemotely.decUsed(
+          rmContainer.getAllocatedResource());
+    }
+  }
+
   protected synchronized void resetReReservations(Priority priority) {
     reReservations.setCount(priority, 0);
   }
@@ -444,8 +464,8 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
    */
   public synchronized Resource getHeadroom() {
     // Corner case to deal with applications being slightly over-limit
-    if (resourceLimit.getMemory() < 0) {
-      resourceLimit.setMemory(0);
+    if (resourceLimit.getMemorySize() < 0) {
+      resourceLimit.setMemorySize(0);
     }
     
     return resourceLimit;
@@ -480,7 +500,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
         if (requests != null) {
           LOG.debug("showRequests:" + " application=" + getApplicationId()
               + " headRoom=" + getHeadroom() + " currentConsumption="
-              + attemptResourceUsage.getUsed().getMemory());
+              + attemptResourceUsage.getUsed().getMemorySize());
           for (ResourceRequest request : requests.values()) {
             LOG.debug("showRequests:" + " application=" + getApplicationId()
                 + " request=" + request);
@@ -592,27 +612,26 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return (!unmanagedAM && appAttempt.getMasterContainer() == null);
   }
 
-  // Blacklist used for user containers
-  public synchronized void updateBlacklist(
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
+  public synchronized void updateBlacklist(List<String> blacklistAdditions,
+      List<String> blacklistRemovals) {
     if (!isStopped) {
-      this.appSchedulingInfo.updateBlacklist(
-          blacklistAdditions, blacklistRemovals);
+      if (isWaitingForAMContainer()) {
+        // The request is for the AM-container, and the AM-container is launched
+        // by the system. So, update the places that are blacklisted by system
+        // (as opposed to those blacklisted by the application).
+        this.appSchedulingInfo.updatePlacesBlacklistedBySystem(
+            blacklistAdditions, blacklistRemovals);
+      } else {
+        this.appSchedulingInfo.updatePlacesBlacklistedByApp(blacklistAdditions,
+            blacklistRemovals);
+      }
     }
   }
 
-  // Blacklist used for AM containers
-  public synchronized void updateAMBlacklist(
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
-    if (!isStopped) {
-      this.appSchedulingInfo.updateAMBlacklist(
-          blacklistAdditions, blacklistRemovals);
-    }
-  }
-
-  public boolean isBlacklisted(String resourceName) {
-    boolean useAMBlacklist = isWaitingForAMContainer();
-    return this.appSchedulingInfo.isBlacklisted(resourceName, useAMBlacklist);
+  public boolean isPlaceBlacklisted(String resourceName) {
+    boolean forAMContainer = isWaitingForAMContainer();
+    return this.appSchedulingInfo.isPlaceBlacklisted(resourceName,
+      forAMContainer);
   }
 
   public synchronized int addMissedNonPartitionedRequestSchedulingOpportunity(
@@ -682,7 +701,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
       for (RMContainer rmContainer : this.liveContainers.values()) {
         long usedMillis = currentTimeMillis - rmContainer.getCreationTime();
         Resource resource = rmContainer.getContainer().getResource();
-        memorySeconds += resource.getMemory() * usedMillis /  
+        memorySeconds += resource.getMemorySize() * usedMillis /
             DateUtils.MILLIS_PER_SECOND;
         vcoreSeconds += resource.getVirtualCores() * usedMillis  
             / DateUtils.MILLIS_PER_SECOND;
