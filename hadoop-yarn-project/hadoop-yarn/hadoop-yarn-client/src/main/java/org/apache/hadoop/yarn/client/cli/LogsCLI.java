@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.client.cli;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +42,7 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -84,6 +86,8 @@ public class LogsCLI extends Configured implements Tool {
   private static final String APP_OWNER_OPTION = "appOwner";
   private static final String AM_CONTAINER_OPTION = "am";
   private static final String PER_CONTAINER_LOG_FILES_OPTION = "log_files";
+  private static final String PER_CONTAINER_LOG_FILES_REGEX_OPTION
+      = "log_files_pattern";
   private static final String LIST_NODES_OPTION = "list_nodes";
   private static final String SHOW_APPLICATION_LOG_INFO
       = "show_application_log_info";
@@ -91,7 +95,6 @@ public class LogsCLI extends Configured implements Tool {
       = "show_container_log_info";
   private static final String OUT_OPTION = "out";
   private static final String SIZE_OPTION = "size";
-  private static final String REGEX_OPTION = "regex";
   public static final String HELP_CMD = "help";
   private PrintStream outStream = System.out;
   private YarnClient yarnClient = null;
@@ -130,6 +133,7 @@ public class LogsCLI extends Configured implements Tool {
     boolean showContainerLogInfo = false;
     boolean useRegex = false;
     String[] logFiles = null;
+    String[] logFilesRegex = null;
     List<String> amContainersList = new ArrayList<String>();
     String localDir = null;
     long bytes = Long.MAX_VALUE;
@@ -145,7 +149,6 @@ public class LogsCLI extends Configured implements Tool {
       showApplicationLogInfo = commandLine.hasOption(
           SHOW_APPLICATION_LOG_INFO);
       showContainerLogInfo = commandLine.hasOption(SHOW_CONTAINER_LOG_INFO);
-      useRegex = commandLine.hasOption(REGEX_OPTION);
       if (getAMContainerLogs) {
         try {
           amContainersList = parseAMContainer(commandLine, printOpts);
@@ -156,6 +159,11 @@ public class LogsCLI extends Configured implements Tool {
       }
       if (commandLine.hasOption(PER_CONTAINER_LOG_FILES_OPTION)) {
         logFiles = commandLine.getOptionValues(PER_CONTAINER_LOG_FILES_OPTION);
+      }
+      if (commandLine.hasOption(PER_CONTAINER_LOG_FILES_REGEX_OPTION)) {
+        logFilesRegex = commandLine.getOptionValues(
+            PER_CONTAINER_LOG_FILES_REGEX_OPTION);
+        useRegex = true;
       }
       if (commandLine.hasOption(SIZE_OPTION)) {
         bytes = Long.parseLong(commandLine.getOptionValue(SIZE_OPTION));
@@ -206,6 +214,12 @@ public class LogsCLI extends Configured implements Tool {
       return -1;
     }
 
+    if (logFiles != null && logFiles.length > 0 && logFilesRegex != null
+        && logFilesRegex.length > 0) {
+      System.err.println("Invalid options. Can only accept one of "
+          + "log_files/log_files_pattern.");
+      return -1;
+    }
     if (localDir != null) {
       File file = new File(localDir);
       if (file.exists() && file.isFile()) {
@@ -248,10 +262,12 @@ public class LogsCLI extends Configured implements Tool {
     }
 
     Set<String> logs = new HashSet<String>();
-    if (fetchAllLogFiles(logFiles, useRegex)) {
+    if (fetchAllLogFiles(logFiles, logFilesRegex)) {
       logs.add("ALL");
     } else if (logFiles != null && logFiles.length > 0) {
       logs.addAll(Arrays.asList(logFiles));
+    } else if (logFilesRegex != null && logFilesRegex.length > 0) {
+      logs.addAll(Arrays.asList(logFilesRegex));
     }
 
     ContainerLogsRequest request = new ContainerLogsRequest(appId,
@@ -366,18 +382,28 @@ public class LogsCLI extends Configured implements Tool {
     return amContainersList;
   }
 
-  private boolean fetchAllLogFiles(String[] logFiles, boolean useRegex) {
+  private boolean fetchAllLogFiles(String[] logFiles, String[] logFilesRegex) {
 
-    // If no value is specified for the PER_CONTAINER_LOG_FILES_OPTION option,
+    // If no value is specified for the PER_CONTAINER_LOG_FILES_OPTION option
+    // and PER_CONTAINER_LOG_FILES_REGEX_OPTION
     // we will assume all logs.
-    if (logFiles == null || logFiles.length == 0) {
+    if ((logFiles == null || logFiles.length == 0) && (
+        logFilesRegex == null || logFilesRegex.length == 0)) {
       return true;
     }
 
-    List<String> logs = Arrays.asList(logFiles);
-    if (logs.contains("ALL") || logs.contains("*")||
-        (logs.contains(".*") && useRegex)) {
-      return true;
+    if (logFiles != null && logFiles.length > 0) {
+      List<String> logs = Arrays.asList(logFiles);
+      if (logs.contains("ALL") || logs.contains("*")) {
+        return true;
+      }
+    }
+
+    if (logFilesRegex != null && logFilesRegex.length > 0) {
+      List<String> logsRegex = Arrays.asList(logFilesRegex);
+      if (logsRegex.contains(".*")) {
+        return true;
+      }
     }
 
     return false;
@@ -438,15 +464,7 @@ public class LogsCLI extends Configured implements Tool {
     PrintStream out = logCliHelper.createPrintStream(localDir, nodeId,
         containerIdStr);
     try {
-      // fetch all the log files for the container
-      // filter the log files based on the given -log_files pattern
-      List<PerLogFileInfo> allLogFileInfos=
-          getContainerLogFiles(getConf(), containerIdStr, nodeHttpAddress);
-      List<String> fileNames = new ArrayList<String>();
-      for (PerLogFileInfo fileInfo : allLogFileInfos) {
-        fileNames.add(fileInfo.getFileName());
-      }
-      Set<String> matchedFiles = getMatchedLogFiles(request, fileNames,
+      Set<String> matchedFiles = getMatchedContainerLogFiles(request,
           useRegex);
       if (matchedFiles.isEmpty()) {
         System.err.println("Can not find any log file matching the pattern: "
@@ -463,22 +481,33 @@ public class LogsCLI extends Configured implements Tool {
       out.println(containerString);
       out.println(StringUtils.repeat("=", containerString.length()));
       boolean foundAnyLogs = false;
+      byte[] buffer = new byte[65536];
       for (String logFile : newOptions.getLogTypes()) {
         out.println("LogType:" + logFile);
         out.println("Log Upload Time:"
             + Times.format(System.currentTimeMillis()));
         out.println("Log Contents:");
+        InputStream is = null;
         try {
-          WebResource webResource =
-              webServiceClient.resource(WebAppUtils.getHttpSchemePrefix(conf)
-                  + nodeHttpAddress);
-          ClientResponse response =
-              webResource.path("ws").path("v1").path("node")
-                .path("containers").path(containerIdStr).path("logs")
-                .path(logFile)
-                .queryParam("size", Long.toString(request.getBytes()))
-                .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
-          out.println(response.getEntity(String.class));
+          ClientResponse response = getResponeFromNMWebService(conf,
+              webServiceClient, request, logFile);
+          if (response != null && response.getStatusInfo().getStatusCode() ==
+              ClientResponse.Status.OK.getStatusCode()) {
+            is = response.getEntityInputStream();
+            int len = 0;
+            while((len = is.read(buffer)) != -1) {
+              out.write(buffer, 0, len);
+            }
+            out.println();
+          } else {
+            out.println("Can not get any logs for the log file: " + logFile);
+            String msg = "Response from the NodeManager:" + nodeId +
+                " WebService is " + ((response == null) ? "null":
+                "not successful," + " HTTP error code: " +
+                response.getStatus() + ", Server response:\n" +
+                response.getEntity(String.class));
+            out.println(msg);
+          }
           StringBuilder sb = new StringBuilder();
           sb.append("End of LogType:" + logFile + ".");
           if (request.getContainerState() == ContainerState.RUNNING) {
@@ -493,6 +522,8 @@ public class LogsCLI extends Configured implements Tool {
           System.err.println("Can not find the log file:" + logFile
               + " for the container:" + containerIdStr + " in NodeManager:"
               + nodeId);
+        } finally {
+          IOUtils.closeQuietly(is);
         }
       }
       // for the case, we have already uploaded partial logs in HDFS
@@ -753,15 +784,20 @@ public class LogsCLI extends Configured implements Tool {
     opts.addOption(amOption);
     Option logFileOpt = new Option(PER_CONTAINER_LOG_FILES_OPTION, true,
         "Specify comma-separated value "
-        + "to get exact matched log files. Use \"ALL\" or \"*\"to "
-        + "fetch all the log files for the container. Specific -regex "
-        + "for using java regex to find matched log files.");
+        + "to get exact matched log files. Use \"ALL\" or \"*\" to "
+        + "fetch all the log files for the container.");
     logFileOpt.setValueSeparator(',');
     logFileOpt.setArgs(Option.UNLIMITED_VALUES);
     logFileOpt.setArgName("Log File Name");
     opts.addOption(logFileOpt);
-    opts.addOption(REGEX_OPTION, false, "Work with -log_files to find "
-        + "matched files by using java regex.");
+    Option logFileRegexOpt = new Option(PER_CONTAINER_LOG_FILES_REGEX_OPTION,
+        true, "Specify comma-separated value "
+        + "to get matched log files by using java regex. Use \".*\" to "
+        + "fetch all the log files for the container.");
+    logFileRegexOpt.setValueSeparator(',');
+    logFileRegexOpt.setArgs(Option.UNLIMITED_VALUES);
+    logFileRegexOpt.setArgName("Log File Pattern");
+    opts.addOption(logFileRegexOpt);
     opts.addOption(SHOW_CONTAINER_LOG_INFO, false,
         "Show the container log metadata, "
         + "including log-file names, the size of the log files. "
@@ -804,7 +840,8 @@ public class LogsCLI extends Configured implements Tool {
     printOpts.addOption(commandOpts.getOption(SHOW_CONTAINER_LOG_INFO));
     printOpts.addOption(commandOpts.getOption(OUT_OPTION));
     printOpts.addOption(commandOpts.getOption(SIZE_OPTION));
-    printOpts.addOption(commandOpts.getOption(REGEX_OPTION));
+    printOpts.addOption(commandOpts.getOption(
+        PER_CONTAINER_LOG_FILES_REGEX_OPTION));
     return printOpts;
   }
 
@@ -1158,5 +1195,34 @@ public class LogsCLI extends Configured implements Tool {
     public void setFileLength(String fileLength) {
       this.fileLength = fileLength;
     }
+  }
+
+  @VisibleForTesting
+  public Set<String> getMatchedContainerLogFiles(ContainerLogsRequest request,
+      boolean useRegex) throws IOException {
+    // fetch all the log files for the container
+    // filter the log files based on the given -log_files pattern
+    List<PerLogFileInfo> allLogFileInfos=
+        getContainerLogFiles(getConf(), request.getContainerId(),
+            request.getNodeHttpAddress());
+    List<String> fileNames = new ArrayList<String>();
+    for (PerLogFileInfo fileInfo : allLogFileInfos) {
+      fileNames.add(fileInfo.getFileName());
+    }
+    return getMatchedLogFiles(request, fileNames,
+        useRegex);
+  }
+
+  @VisibleForTesting
+  public ClientResponse getResponeFromNMWebService(Configuration conf,
+      Client webServiceClient, ContainerLogsRequest request, String logFile) {
+    WebResource webResource =
+        webServiceClient.resource(WebAppUtils.getHttpSchemePrefix(conf)
+        + request.getNodeHttpAddress());
+    return webResource.path("ws").path("v1").path("node")
+        .path("containers").path(request.getContainerId()).path("logs")
+        .path(logFile)
+        .queryParam("size", Long.toString(request.getBytes()))
+        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
   }
 }

@@ -50,11 +50,10 @@ class FSDirMkdirOp {
       throw new InvalidPathException(src);
     }
     FSPermissionChecker pc = fsd.getPermissionChecker();
-    byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
     fsd.writeLock();
     try {
-      src = fsd.resolvePath(pc, src, pathComponents);
-      INodesInPath iip = fsd.getINodesInPath4Write(src);
+      INodesInPath iip = fsd.resolvePathForWrite(pc, src);
+      src = iip.getPath();
       if (fsd.isPermissionEnabled()) {
         fsd.checkTraverse(pc, iip);
       }
