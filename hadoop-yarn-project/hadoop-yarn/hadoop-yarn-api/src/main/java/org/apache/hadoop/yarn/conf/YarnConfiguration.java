@@ -795,6 +795,20 @@ public class YarnConfiguration extends Configuration {
    */
   public static final String RM_PROXY_USER_PREFIX = RM_PREFIX + "proxyuser.";
 
+  /**
+   * Timeout in seconds for YARN node graceful decommission.
+   * This is the maximal time to wait for running containers and applications
+   * to complete before transition a DECOMMISSIONING node into DECOMMISSIONED.
+   */
+  public static final String RM_NODE_GRACEFUL_DECOMMISSION_TIMEOUT =
+      RM_PREFIX + "nodemanager-graceful-decommission-timeout-secs";
+  public static final int DEFAULT_RM_NODE_GRACEFUL_DECOMMISSION_TIMEOUT = 3600;
+
+  public static final String RM_DECOMMISSIONING_NODES_WATCHER_POLL_INTERVAL =
+      RM_PREFIX + "decommissioning-nodes-watcher.poll-interval-secs";
+  public static final int
+      DEFAULT_RM_DECOMMISSIONING_NODES_WATCHER_POLL_INTERVAL = 20;
+
   ////////////////////////////////
   // Node Manager Configs
   ////////////////////////////////
@@ -2685,7 +2699,7 @@ public class YarnConfiguration extends Configuration {
       RM_PREFIX + "am-scheduling.node-blacklisting-enabled";
   @Private
   public static final boolean DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_ENABLED =
-      true;
+      false;
 
   @Private
   /**
@@ -2695,7 +2709,7 @@ public class YarnConfiguration extends Configuration {
       RM_PREFIX + "am-scheduling.node-blacklisting-disable-threshold";
   @Private
   public static final float
-      DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD = 0.8f;
+      DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD = 0.2f;
 
   private static final String NM_SCRIPT_BASED_NODE_LABELS_PROVIDER_PREFIX =
       NM_NODE_LABELS_PROVIDER_PREFIX + "script.";
