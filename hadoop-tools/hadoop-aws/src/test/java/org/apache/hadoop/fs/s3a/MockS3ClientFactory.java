@@ -16,21 +16,25 @@
  * limitations under the License.
  */
 
-package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
+package org.apache.hadoop.fs.s3a;
 
-import org.apache.hadoop.classification.InterfaceAudience.Private;
-import org.apache.hadoop.classification.InterfaceStability.Unstable;
-import org.apache.hadoop.conf.Configurable;
+import static org.mockito.Mockito.*;
+
+import java.net.URI;
+
+import com.amazonaws.services.s3.AmazonS3;
 
 /**
- * A pluggable object for altering the weights of apps in the fair scheduler,
- * which is used for example by {@link NewAppWeightBooster} to give higher
- * weight to new jobs so that short jobs finish faster.
- *
- * May implement {@link Configurable} to access configuration parameters.
+ * An {@link S3ClientFactory} that returns Mockito mocks of the {@link AmazonS3}
+ * interface suitable for unit testing.
  */
-@Private
-@Unstable
-public interface WeightAdjuster {
-  public double adjustWeight(FSAppAttempt app, double curWeight);
+public class MockS3ClientFactory implements S3ClientFactory {
+
+  @Override
+  public AmazonS3 createS3Client(URI name, URI uri) {
+    String bucket = name.getHost();
+    AmazonS3 s3 = mock(AmazonS3.class);
+    when(s3.doesBucketExist(bucket)).thenReturn(true);
+    return s3;
+  }
 }
