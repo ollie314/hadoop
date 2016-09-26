@@ -15,28 +15,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.hadoop.hdfs.server.namenode;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.util.SequentialNumber;
+package org.apache.hadoop.fs.aliyun.oss.contract;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.contract.AbstractContractOpenTest;
+import org.apache.hadoop.fs.contract.AbstractFSContract;
 
 /**
- * An id which uniquely identifies an inode. Id 1 to 1000 are reserved for
- * potential future usage. The id won't be recycled and is not expected to wrap
- * around in a very long time. Root inode id is always 1001. Id 0 is used for
- * backward compatibility support.
+ * Aliyun OSS contract opening file tests.
  */
-@InterfaceAudience.Private
-public class INodeId extends SequentialNumber {
-  /**
-   * The last reserved inode id. InodeIDs are allocated from LAST_RESERVED_ID +
-   * 1.
-   */
-  public static final long LAST_RESERVED_ID = 2 << 14 - 1;
-  public static final long ROOT_INODE_ID = LAST_RESERVED_ID + 1;
-  public static final long INVALID_INODE_ID = -1;
+public class TestAliyunOSSContractOpen extends AbstractContractOpenTest {
 
-  INodeId() {
-    super(ROOT_INODE_ID);
+  @Override
+  protected AbstractFSContract createContract(Configuration conf) {
+    return new AliyunOSSContract(conf);
   }
 }
