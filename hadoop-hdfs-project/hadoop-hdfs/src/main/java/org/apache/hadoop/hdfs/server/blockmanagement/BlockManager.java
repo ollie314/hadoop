@@ -103,6 +103,7 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.util.FoldedTreeSet;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.server.namenode.CacheManager;
 
 import static org.apache.hadoop.hdfs.util.StripedBlockUtil.getInternalBlockLength;
 
@@ -1145,9 +1146,16 @@ public class BlockManager implements BlockStatsMXBean {
             fileSizeExcludeBlocksUnderConstruction, mode);
         isComplete = true;
       }
-      return new LocatedBlocks(fileSizeExcludeBlocksUnderConstruction,
+      LocatedBlocks locations = new LocatedBlocks(
+          fileSizeExcludeBlocksUnderConstruction,
           isFileUnderConstruction, locatedblocks, lastlb, isComplete, feInfo,
           ecPolicy);
+      // Set caching information for the located blocks.
+      CacheManager cm = namesystem.getCacheManager();
+      if (cm != null) {
+        cm.setCachedLocations(locations);
+      }
+      return locations;
     }
   }
 
@@ -4005,13 +4013,15 @@ public class BlockManager implements BlockStatsMXBean {
         return;
       }
       NumberReplicas repl = countNodes(block);
+      int pendingNum = pendingReconstruction.getNumReplicas(block);
       int curExpectedReplicas = getRedundancy(block);
-      if (isNeededReconstruction(block, repl.liveReplicas())) {
-        neededReconstruction.update(block, repl.liveReplicas(),
+      if (!hasEnoughEffectiveReplicas(block, repl, pendingNum,
+          curExpectedReplicas)) {
+        neededReconstruction.update(block, repl.liveReplicas() + pendingNum,
             repl.readOnlyReplicas(), repl.decommissionedAndDecommissioning(),
             curExpectedReplicas, curReplicasDelta, expectedReplicasDelta);
       } else {
-        int oldReplicas = repl.liveReplicas()-curReplicasDelta;
+        int oldReplicas = repl.liveReplicas() + pendingNum - curReplicasDelta;
         int oldExpectedReplicas = curExpectedReplicas-expectedReplicasDelta;
         neededReconstruction.remove(block, oldReplicas, repl.readOnlyReplicas(),
             repl.decommissionedAndDecommissioning(), oldExpectedReplicas);
