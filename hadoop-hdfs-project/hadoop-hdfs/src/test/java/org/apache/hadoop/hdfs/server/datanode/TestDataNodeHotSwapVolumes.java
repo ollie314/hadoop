@@ -27,6 +27,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.BlockMissingException;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -252,6 +253,27 @@ public class TestDataNodeHotSwapVolumes {
       fail("Should throw IOException: empty inputs.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("No directory is specified.", e);
+    }
+  }
+
+  @Test
+  public void testParseStorageTypeChanges() throws IOException {
+    startDFSCluster(1, 1);
+    DataNode dn = cluster.getDataNodes().get(0);
+    Configuration conf = dn.getConf();
+    List<StorageLocation> oldLocations = DataNode.getStorageLocations(conf);
+
+    // Change storage type of an existing StorageLocation
+    String newLoc = String.format("[%s]%s", StorageType.SSD,
+        oldLocations.get(1).getUri());
+    String newDataDirs = oldLocations.get(0).toString() + "," + newLoc;
+
+    try {
+      dn.parseChangedVolumes(newDataDirs);
+      fail("should throw IOE because storage type changes.");
+    } catch (IOException e) {
+      GenericTestUtils.assertExceptionContains(
+          "Changing storage type is not allowed", e);
     }
   }
 
@@ -624,8 +646,6 @@ public class TestDataNodeHotSwapVolumes {
     final DataNode dn = cluster.getDataNodes().get(dataNodeIdx);
     final FileSystem fs = cluster.getFileSystem();
     final Path testFile = new Path("/test");
-    final long lastTimeDiskErrorCheck = dn.getLastDiskErrorCheck();
-
     FSDataOutputStream out = fs.create(testFile, REPLICATION);
 
     Random rb = new Random(0);
@@ -681,16 +701,22 @@ public class TestDataNodeHotSwapVolumes {
 
     reconfigThread.join();
 
+    // Verify if the data directory reconfigure was successful
+    FsDatasetSpi<? extends FsVolumeSpi> fsDatasetSpi = dn.getFSDataset();
+    try (FsDatasetSpi.FsVolumeReferences fsVolumeReferences = fsDatasetSpi
+        .getFsVolumeReferences()) {
+      for (int i =0; i < fsVolumeReferences.size(); i++) {
+        System.out.println("Vol: " + fsVolumeReferences.get(i).getBasePath());
+      }
+      assertEquals("Volume remove wasn't successful.",
+          1, fsVolumeReferences.size());
+    }
+
     // Verify the file has sufficient replications.
     DFSTestUtil.waitReplication(fs, testFile, REPLICATION);
     // Read the content back
     byte[] content = DFSTestUtil.readFileBuffer(fs, testFile);
     assertEquals(BLOCK_SIZE, content.length);
-
-    // If an IOException thrown from BlockReceiver#run, it triggers
-    // DataNode#checkDiskError(). So we can test whether checkDiskError() is called,
-    // to see whether there is IOException in BlockReceiver#run().
-    assertEquals(lastTimeDiskErrorCheck, dn.getLastDiskErrorCheck());
 
     if (!exceptions.isEmpty()) {
       throw new IOException(exceptions.get(0).getCause());
@@ -821,7 +847,7 @@ public class TestDataNodeHotSwapVolumes {
 
     final DataNode dn = cluster.getDataNodes().get(0);
     DatanodeProtocolClientSideTranslatorPB spy =
-        DataNodeTestUtils.spyOnBposToNN(dn, cluster.getNameNode());
+        InternalDataNodeTestUtils.spyOnBposToNN(dn, cluster.getNameNode());
 
     // Remove a data dir from datanode
     File dataDirToKeep = new File(cluster.getDataDirectory(), "data1");

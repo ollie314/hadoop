@@ -21,17 +21,63 @@ package org.apache.hadoop.fs.s3a;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
+import org.apache.hadoop.fs.s3a.scale.S3AScaleTestBase;
+import org.junit.Assert;
 import org.junit.internal.AssumptionViolatedException;
+import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.concurrent.Callable;
 
+import static org.apache.hadoop.fs.contract.ContractTestUtils.skip;
+import static org.apache.hadoop.fs.s3a.S3ATestConstants.*;
+import static org.apache.hadoop.fs.s3a.Constants.*;
+
+/**
+ * Utilities for the S3A tests.
+ */
 public class S3ATestUtils {
 
-  public static S3AFileSystem createTestFileSystem(Configuration conf) throws
-      IOException {
-    String fsname = conf.getTrimmed(TestS3AFileSystemContract.TEST_FS_S3A_NAME, "");
+  /**
+   * Value to set a system property to (in maven) to declare that
+   * a property has been unset.
+   */
+  public static final String UNSET_PROPERTY = "unset";
 
+  /**
+   * Create the test filesystem.
+   *
+   * If the test.fs.s3a.name property is not set, this will
+   * trigger a JUnit failure.
+   *
+   * Multipart purging is enabled.
+   * @param conf configuration
+   * @return the FS
+   * @throws IOException IO Problems
+   * @throws AssumptionViolatedException if the FS is not named
+   */
+  public static S3AFileSystem createTestFileSystem(Configuration conf)
+      throws IOException {
+    return createTestFileSystem(conf, true);
+  }
+
+  /**
+   * Create the test filesystem with or without multipart purging
+   *
+   * If the test.fs.s3a.name property is not set, this will
+   * trigger a JUnit failure.
+   * @param conf configuration
+   * @param purge flag to enable Multipart purging
+   * @return the FS
+   * @throws IOException IO Problems
+   * @throws AssumptionViolatedException if the FS is not named
+   */
+  public static S3AFileSystem createTestFileSystem(Configuration conf,
+      boolean purge)
+      throws IOException {
+
+    String fsname = conf.getTrimmed(TEST_FS_S3A_NAME, "");
 
     boolean liveTest = !StringUtils.isEmpty(fsname);
     URI testURI = null;
@@ -43,19 +89,35 @@ public class S3ATestUtils {
       // This doesn't work with our JUnit 3 style test cases, so instead we'll
       // make this whole class not run by default
       throw new AssumptionViolatedException(
-          "No test filesystem in " + TestS3AFileSystemContract.TEST_FS_S3A_NAME);
+          "No test filesystem in " + TEST_FS_S3A_NAME);
     }
     S3AFileSystem fs1 = new S3AFileSystem();
     //enable purging in tests
-    conf.setBoolean(Constants.PURGE_EXISTING_MULTIPART, true);
-    conf.setInt(Constants.PURGE_EXISTING_MULTIPART_AGE, 0);
+    if (purge) {
+      conf.setBoolean(PURGE_EXISTING_MULTIPART, true);
+      // but a long delay so that parallel multipart tests don't
+      // suddenly start timing out
+      conf.setInt(PURGE_EXISTING_MULTIPART_AGE, 30 * 60);
+    }
     fs1.initialize(testURI, conf);
     return fs1;
   }
 
-  public static FileContext createTestFileContext(Configuration conf) throws
-      IOException {
-    String fsname = conf.getTrimmed(TestS3AFileSystemContract.TEST_FS_S3A_NAME, "");
+  /**
+   * Create a file context for tests.
+   *
+   * If the test.fs.s3a.name property is not set, this will
+   * trigger a JUnit failure.
+   *
+   * Multipart purging is enabled.
+   * @param conf configuration
+   * @return the FS
+   * @throws IOException IO Problems
+   * @throws AssumptionViolatedException if the FS is not named
+   */
+  public static FileContext createTestFileContext(Configuration conf)
+      throws IOException {
+    String fsname = conf.getTrimmed(TEST_FS_S3A_NAME, "");
 
     boolean liveTest = !StringUtils.isEmpty(fsname);
     URI testURI = null;
@@ -66,10 +128,385 @@ public class S3ATestUtils {
     if (!liveTest) {
       // This doesn't work with our JUnit 3 style test cases, so instead we'll
       // make this whole class not run by default
-      throw new AssumptionViolatedException(
-          "No test filesystem in " + TestS3AFileSystemContract.TEST_FS_S3A_NAME);
+      throw new AssumptionViolatedException("No test filesystem in "
+          + TEST_FS_S3A_NAME);
     }
     FileContext fc = FileContext.getFileContext(testURI,conf);
     return fc;
+  }
+
+  /**
+   * Repeatedly attempt a callback until timeout or a {@link FailFastException}
+   * is raised. This is modeled on ScalaTests {@code eventually(Closure)} code.
+   * @param timeout timeout
+   * @param callback callback to invoke
+   * @throws FailFastException any fast-failure
+   * @throws Exception the exception which caused the iterator to fail
+   */
+  public static void eventually(int timeout, Callable<Void> callback)
+      throws Exception {
+    Exception lastException;
+    long endtime = System.currentTimeMillis() + timeout;
+    do {
+      try {
+        callback.call();
+        return;
+      } catch (InterruptedException | FailFastException e) {
+        throw e;
+      } catch (Exception e) {
+        lastException = e;
+      }
+      Thread.sleep(500);
+    } while (endtime > System.currentTimeMillis());
+    throw lastException;
+  }
+
+  /**
+   * patch the endpoint option so that irrespective of where other tests
+   * are working, the IO performance tests can work with the landsat
+   * images.
+   * @param conf configuration to patch
+   */
+  public static void useCSVDataEndpoint(Configuration conf) {
+    String endpoint = conf.getTrimmed(S3AScaleTestBase.KEY_CSVTEST_ENDPOINT,
+        S3AScaleTestBase.DEFAULT_CSVTEST_ENDPOINT);
+    if (!endpoint.isEmpty()) {
+      conf.set(ENDPOINT, endpoint);
+    }
+  }
+
+  /**
+   * Get a long test property.
+   * <ol>
+   *   <li>Look up configuration value (which can pick up core-default.xml),
+   *       using {@code defVal} as the default value (if conf != null).
+   *   </li>
+   *   <li>Fetch the system property.</li>
+   *   <li>If the system property is not empty or "(unset)":
+   *   it overrides the conf value.
+   *   </li>
+   * </ol>
+   * This puts the build properties in charge of everything. It's not a
+   * perfect design; having maven set properties based on a file, as ant let
+   * you do, is better for customization.
+   *
+   * As to why there's a special (unset) value, see
+   * {@link http://stackoverflow.com/questions/7773134/null-versus-empty-arguments-in-maven}
+   * @param conf config: may be null
+   * @param key key to look up
+   * @param defVal default value
+   * @return the evaluated test property.
+   */
+  public static long getTestPropertyLong(Configuration conf,
+      String key, long defVal) {
+    return Long.valueOf(
+        getTestProperty(conf, key, Long.toString(defVal)));
+  }
+  /**
+   * Get a test property value in bytes, using k, m, g, t, p, e suffixes.
+   * {@link org.apache.hadoop.util.StringUtils.TraditionalBinaryPrefix#string2long(String)}
+   * <ol>
+   *   <li>Look up configuration value (which can pick up core-default.xml),
+   *       using {@code defVal} as the default value (if conf != null).
+   *   </li>
+   *   <li>Fetch the system property.</li>
+   *   <li>If the system property is not empty or "(unset)":
+   *   it overrides the conf value.
+   *   </li>
+   * </ol>
+   * This puts the build properties in charge of everything. It's not a
+   * perfect design; having maven set properties based on a file, as ant let
+   * you do, is better for customization.
+   *
+   * As to why there's a special (unset) value, see
+   * {@link http://stackoverflow.com/questions/7773134/null-versus-empty-arguments-in-maven}
+   * @param conf config: may be null
+   * @param key key to look up
+   * @param defVal default value
+   * @return the evaluated test property.
+   */
+  public static long getTestPropertyBytes(Configuration conf,
+      String key, String defVal) {
+    return org.apache.hadoop.util.StringUtils.TraditionalBinaryPrefix
+        .string2long(getTestProperty(conf, key, defVal));
+  }
+
+  /**
+   * Get an integer test property; algorithm described in
+   * {@link #getTestPropertyLong(Configuration, String, long)}.
+   * @param key key to look up
+   * @param defVal default value
+   * @return the evaluated test property.
+   */
+  public static int getTestPropertyInt(Configuration conf,
+      String key, int defVal) {
+    return (int) getTestPropertyLong(conf, key, defVal);
+  }
+
+  /**
+   * Get a boolean test property; algorithm described in
+   * {@link #getTestPropertyLong(Configuration, String, long)}.
+   * @param key key to look up
+   * @param defVal default value
+   * @return the evaluated test property.
+   */
+  public static boolean getTestPropertyBool(Configuration conf,
+      String key,
+      boolean defVal) {
+    return Boolean.valueOf(
+        getTestProperty(conf, key, Boolean.toString(defVal)));
+  }
+
+  /**
+   * Get a string test property.
+   * <ol>
+   *   <li>Look up configuration value (which can pick up core-default.xml),
+   *       using {@code defVal} as the default value (if conf != null).
+   *   </li>
+   *   <li>Fetch the system property.</li>
+   *   <li>If the system property is not empty or "(unset)":
+   *   it overrides the conf value.
+   *   </li>
+   * </ol>
+   * This puts the build properties in charge of everything. It's not a
+   * perfect design; having maven set properties based on a file, as ant let
+   * you do, is better for customization.
+   *
+   * As to why there's a special (unset) value, see
+   * @see <a href="http://stackoverflow.com/questions/7773134/null-versus-empty-arguments-in-maven">
+   *   Stack Overflow</a>
+   * @param conf config: may be null
+   * @param key key to look up
+   * @param defVal default value
+   * @return the evaluated test property.
+   */
+
+  public static String getTestProperty(Configuration conf,
+      String key,
+      String defVal) {
+    String confVal = conf != null ? conf.getTrimmed(key, defVal) : defVal;
+    String propval = System.getProperty(key);
+    return StringUtils.isNotEmpty(propval) && !UNSET_PROPERTY.equals(propval)
+        ? propval : confVal;
+  }
+
+  /**
+   * The exception to raise so as to exit fast from
+   * {@link #eventually(int, Callable)}.
+   */
+  public static class FailFastException extends Exception {
+    public FailFastException() {
+    }
+
+    public FailFastException(String message) {
+      super(message);
+    }
+
+    public FailFastException(String message, Throwable cause) {
+      super(message, cause);
+    }
+
+    public FailFastException(Throwable cause) {
+      super(cause);
+    }
+  }
+
+  /**
+   * Verify the class of an exception. If it is not as expected, rethrow it.
+   * Comparison is on the exact class, not subclass-of inference as
+   * offered by {@code instanceof}.
+   * @param clazz the expected exception class
+   * @param ex the exception caught
+   * @return the exception, if it is of the expected class
+   * @throws Exception the exception passed in.
+   */
+  public static Exception verifyExceptionClass(Class clazz,
+      Exception ex)
+      throws Exception {
+    if (!(ex.getClass().equals(clazz))) {
+      throw ex;
+    }
+    return ex;
+  }
+
+  /**
+   * Turn off FS Caching: use if a filesystem with different options from
+   * the default is required.
+   * @param conf configuration to patch
+   */
+  public static void disableFilesystemCaching(Configuration conf) {
+    conf.setBoolean("fs.s3a.impl.disable.cache", true);
+  }
+
+  /**
+   * Skip a test if encryption tests are disabled.
+   * @param configuration configuration to probe
+   */
+  public static void skipIfEncryptionTestsDisabled(
+      Configuration configuration) {
+    if (!configuration.getBoolean(KEY_ENCRYPTION_TESTS, true)) {
+      skip("Skipping encryption tests");
+    }
+  }
+
+  /**
+   * Reset all metrics in a list.
+   * @param metrics metrics to reset
+   */
+  public static void reset(S3ATestUtils.MetricDiff... metrics) {
+    for (S3ATestUtils.MetricDiff metric : metrics) {
+      metric.reset();
+    }
+  }
+
+  /**
+   * Print all metrics in a list.
+   * @param log log to print the metrics to.
+   * @param metrics metrics to process
+   */
+  public static void print(Logger log, S3ATestUtils.MetricDiff... metrics) {
+    for (S3ATestUtils.MetricDiff metric : metrics) {
+      log.info(metric.toString());
+    }
+  }
+
+  /**
+   * Print all metrics in a list, then reset them.
+   * @param log log to print the metrics to.
+   * @param metrics metrics to process
+   */
+  public static void printThenReset(Logger log,
+      S3ATestUtils.MetricDiff... metrics) {
+    print(log, metrics);
+    reset(metrics);
+  }
+
+  /**
+   * Helper class to do diffs of metrics.
+   */
+  public static final class MetricDiff {
+    private final S3AFileSystem fs;
+    private final Statistic statistic;
+    private long startingValue;
+
+    /**
+     * Constructor.
+     * Invokes {@link #reset()} so it is immediately capable of measuring the
+     * difference in metric values.
+     *
+     * @param fs the filesystem to monitor
+     * @param statistic the statistic to monitor.
+     */
+    public MetricDiff(S3AFileSystem fs, Statistic statistic) {
+      this.fs = fs;
+      this.statistic = statistic;
+      reset();
+    }
+
+    /**
+     * Reset the starting value to the current value.
+     * Diffs will be against this new value.
+     */
+    public void reset() {
+      startingValue = currentValue();
+    }
+
+    /**
+     * Get the current value of the metric.
+     * @return the latest value.
+     */
+    public long currentValue() {
+      return fs.getInstrumentation().getCounterValue(statistic);
+    }
+
+    /**
+     * Get the difference between the the current value and
+     * {@link #startingValue}.
+     * @return the difference.
+     */
+    public long diff() {
+      return currentValue() - startingValue;
+    }
+
+    @Override
+    public String toString() {
+      long c = currentValue();
+      final StringBuilder sb = new StringBuilder(statistic.getSymbol());
+      sb.append(" starting=").append(startingValue);
+      sb.append(" current=").append(c);
+      sb.append(" diff=").append(c - startingValue);
+      return sb.toString();
+    }
+
+    /**
+     * Assert that the value of {@link #diff()} matches that expected.
+     * @param message message to print; metric name is appended
+     * @param expected expected value.
+     */
+    public void assertDiffEquals(String message, long expected) {
+      Assert.assertEquals(message + ": " + statistic.getSymbol(),
+          expected, diff());
+    }
+
+    /**
+     * Assert that the value of {@link #diff()} matches that expected.
+     * @param expected expected value.
+     */
+    public void assertDiffEquals(long expected) {
+      assertDiffEquals("Count of " + this, expected);
+    }
+
+    /**
+     * Assert that the value of {@link #diff()} matches that of another
+     * instance.
+     * @param that the other metric diff instance.
+     */
+    public void assertDiffEquals(MetricDiff that) {
+      Assert.assertEquals(this.toString() + " != " + that,
+          this.diff(), that.diff());
+    }
+
+    /**
+     * Comparator for assertions.
+     * @param that other metric diff
+     * @return true if the value is {@code ==} the other's
+     */
+    public boolean diffEquals(MetricDiff that) {
+      return this.diff() == that.diff();
+    }
+
+    /**
+     * Comparator for assertions.
+     * @param that other metric diff
+     * @return true if the value is {@code <} the other's
+     */
+    public boolean diffLessThan(MetricDiff that) {
+      return this.diff() < that.diff();
+    }
+
+    /**
+     * Comparator for assertions.
+     * @param that other metric diff
+     * @return true if the value is {@code <=} the other's
+     */
+    public boolean diffLessThanOrEquals(MetricDiff that) {
+      return this.diff() <= that.diff();
+    }
+
+    /**
+     * Get the statistic
+     * @return the statistic
+     */
+    public Statistic getStatistic() {
+      return statistic;
+    }
+
+    /**
+     * Get the starting value; that set in the last {@link #reset()}.
+     * @return the starting value for diffs.
+     */
+    public long getStartingValue() {
+      return startingValue;
+    }
   }
 }

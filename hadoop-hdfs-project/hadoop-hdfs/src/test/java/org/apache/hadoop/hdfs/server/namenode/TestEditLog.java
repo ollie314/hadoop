@@ -563,8 +563,7 @@ public class TestEditLog {
       // Log an edit from thread A
       doLogEdit(threadA, editLog, "thread-a 1");
       assertEquals("logging edit without syncing should do not affect txid",
-        1, editLog.getSyncTxId());
-
+          1, editLog.getSyncTxId());
       // logSyncAll in Thread B
       doCallLogSyncAll(threadB, editLog);
       assertEquals("logSyncAll should sync thread A's transaction",

@@ -18,6 +18,7 @@
 package org.apache.hadoop.util;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
 import org.junit.Assert;
 
 import java.io.BufferedReader;
@@ -29,8 +30,13 @@ import java.io.PrintWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.test.GenericTestUtils;
+
 import static org.apache.hadoop.util.Shell.*;
 import org.junit.Assume;
 import org.junit.Before;
@@ -49,7 +55,7 @@ public class TestShell extends Assert {
   @Rule
   public TestName methodName = new TestName();
 
-  private File rootTestDir = new File(System.getProperty("test.build.data", "target/"));
+  private File rootTestDir = GenericTestUtils.getTestDir();
 
   /**
    * A filename generated uniquely for each test method. The file
@@ -143,6 +149,44 @@ public class TestShell extends Assert {
     shellFile.delete();
     assertTrue("Script did not timeout" , shexc.isTimedOut());
   }
+
+  @Test
+  public void testEnvVarsWithInheritance() throws Exception {
+    Assume.assumeFalse(WINDOWS);
+    testEnvHelper(true);
+  }
+
+  @Test
+  public void testEnvVarsWithoutInheritance() throws Exception {
+    Assume.assumeFalse(WINDOWS);
+    testEnvHelper(false);
+  }
+
+  private void testEnvHelper(boolean inheritParentEnv) throws Exception {
+    Map<String, String> customEnv = Collections.singletonMap(
+        AbstractJavaKeyStoreProvider.CREDENTIAL_PASSWORD_ENV_VAR, "foo");
+    Shell.ShellCommandExecutor command = new ShellCommandExecutor(
+        new String[]{"env"}, null, customEnv, 0L,
+        inheritParentEnv);
+    command.execute();
+    String[] varsArr = command.getOutput().split("\n");
+    Map<String, String> vars = new HashMap<>();
+    for (String var : varsArr) {
+      int eqIndex = var.indexOf('=');
+      vars.put(var.substring(0, eqIndex), var.substring(eqIndex + 1));
+    }
+    Map<String, String> expectedEnv = new HashMap<>();
+    expectedEnv.putAll(System.getenv());
+    if (inheritParentEnv) {
+      expectedEnv.putAll(customEnv);
+    } else {
+      assertFalse("child process environment should not have contained "
+              + AbstractJavaKeyStoreProvider.CREDENTIAL_PASSWORD_ENV_VAR,
+          vars.containsKey(
+              AbstractJavaKeyStoreProvider.CREDENTIAL_PASSWORD_ENV_VAR));
+    }
+    assertEquals(expectedEnv, vars);
+  }
   
   private static int countTimerThreads() {
     ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
@@ -196,9 +240,11 @@ public class TestShell extends Assert {
       expectedCommand =
           new String[]{getWinUtilsPath(), "task", "isAlive", anyPid };
     } else if (Shell.isSetsidAvailable) {
-      expectedCommand = new String[] { "bash", "-c", "kill -0 -- -" + anyPid };
+      expectedCommand = new String[] { "bash", "-c", "kill -0 -- -'" +
+            anyPid + "'"};
     } else {
-      expectedCommand = new String[]{ "bash", "-c", "kill -0 " + anyPid };
+      expectedCommand = new String[] {"bash", "-c", "kill -0 '" + anyPid +
+            "'" };
     }
     Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
@@ -216,9 +262,11 @@ public class TestShell extends Assert {
       expectedCommand =
           new String[]{getWinUtilsPath(), "task", "kill", anyPid };
     } else if (Shell.isSetsidAvailable) {
-      expectedCommand = new String[] { "bash", "-c", "kill -9 -- -" + anyPid };
+      expectedCommand = new String[] { "bash", "-c", "kill -9 -- -'" + anyPid +
+            "'"};
     } else {
-      expectedCommand = new String[]{ "bash", "-c", "kill -9 " + anyPid };
+      expectedCommand = new String[]{ "bash", "-c", "kill -9 '" + anyPid +
+            "'"};
     }
     Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
@@ -422,4 +470,10 @@ public class TestShell extends Assert {
     }
   }
 
+  @Test
+  public void testBashQuote() {
+    assertEquals("'foobar'", Shell.bashQuote("foobar"));
+    assertEquals("'foo'\\''bar'", Shell.bashQuote("foo'bar"));
+    assertEquals("''\\''foo'\\''bar'\\'''", Shell.bashQuote("'foo'bar'"));
+  }
 }

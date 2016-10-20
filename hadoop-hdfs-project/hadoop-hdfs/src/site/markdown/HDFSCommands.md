@@ -46,7 +46,8 @@ HDFS Commands Guide
     * [storagepolicies](#storagepolicies)
     * [zkfc](#zkfc)
 * [Debug Commands](#Debug_Commands)
-    * [verify](#verify)
+    * [verifyMeta](#verifyMeta)
+    * [computeMeta](#computeMeta)
     * [recoverLease](#recoverLease)
 
 Overview
@@ -296,8 +297,9 @@ See the [HDFS Cache Administration Documentation](./CentralizedCacheManagement.h
 Usage:
 
       hdfs crypto -createZone -keyName <keyName> -path <path>
-      hdfs crypto -help <command-name>
       hdfs crypto -listZones
+      hdfs crypto -provisionTrash -path <path>
+      hdfs crypto -help <command-name>
 
 See the [HDFS Transparent Encryption Documentation](./TransparentEncryption.html#crypto_command-line_interface) for more information.
 
@@ -347,6 +349,7 @@ Usage:
               [-fetchImage <local directory>]
               [-shutdownDatanode <datanode_host:ipc_port> [upgrade]]
               [-getDatanodeInfo <datanode_host:ipc_port>]
+              [-evictWriters <datanode_host:ipc_port>]
               [-triggerBlockReport [-incremental] <datanode_host:ipc_port>]
               [-help [cmd]]
 
@@ -380,6 +383,7 @@ Usage:
 | `-disallowSnapshot` \<snapshotDir\> | Disallowing snapshots of a directory to be created. All snapshots of the directory must be deleted before disallowing snapshots. See the [HDFS Snapshot Documentation](./HdfsSnapshots.html) for more information. |
 | `-fetchImage` \<local directory\> | Downloads the most recent fsimage from the NameNode and saves it in the specified local directory. |
 | `-shutdownDatanode` \<datanode\_host:ipc\_port\> [upgrade] | Submit a shutdown request for the given datanode. See [Rolling Upgrade document](./HdfsRollingUpgrade.html#dfsadmin_-shutdownDatanode) for the detail. |
+| `-evictWriters` \<datanode\_host:ipc\_port\> | Make the datanode evict all clients that are writing a block. This is useful if decommissioning is hung due to slow writers. |
 | `-getDatanodeInfo` \<datanode\_host:ipc\_port\> | Get the information about the given datanode. See [Rolling Upgrade document](./HdfsRollingUpgrade.html#dfsadmin_-getDatanodeInfo) for the detail. |
 | `-triggerBlockReport` `[-incremental]` \<datanode\_host:ipc\_port\> | Trigger a block report for the given datanode. If 'incremental' is specified, it will be otherwise, it will be a full block report. |
 | `-help` [cmd] | Displays help for the given command or all commands if none is specified. |
@@ -456,7 +460,7 @@ Usage:
 | `-rollback` | Rollback the NameNode to the previous version. This should be used after stopping the cluster and distributing the old Hadoop version. |
 | `-rollingUpgrade` \<downgrade\|rollback\|started\> | See [Rolling Upgrade document](./HdfsRollingUpgrade.html#NameNode_Startup_Options) for the detail. |
 | `-finalize` | No longer supported. Use `dfsadmin -finalizeUpgrade` instead. |
-| `-importCheckpoint` | Loads image from a checkpoint directory and save it into the current one. Checkpoint dir is read from property fs.checkpoint.dir |
+| `-importCheckpoint` | Loads image from a checkpoint directory and save it into the current one. Checkpoint dir is read from property dfs.namenode.checkpoint.dir |
 | `-initializeSharedEdits` | Format a new shared edits dir and copy in enough edit log segments so that the standby NameNode can start up. |
 | `-bootstrapStandby` | Allows the standby NameNode's storage directories to be bootstrapped by copying the latest namespace snapshot from the active NameNode. This is used when first configuring an HA cluster. |
 | `-recover` `[-force]` | Recover lost metadata on a corrupt filesystem. See [HDFS User Guide](./HdfsUserGuide.html#Recovery_Mode) for the detail. |
@@ -508,11 +512,11 @@ This comamnd starts a Zookeeper Failover Controller process for use with [HDFS H
 Debug Commands
 --------------
 
-Useful commands to help administrators debug HDFS issues, like validating block files and calling recoverLease.
+Useful commands to help administrators debug HDFS issues. These commands are for advanced users only.
 
-### `verify`
+### `verifyMeta`
 
-Usage: `hdfs debug verify [-meta <metadata-file>] [-block <block-file>]`
+Usage: `hdfs debug verifyMeta -meta <metadata-file> [-block <block-file>]`
 
 | COMMAND\_OPTION | Description |
 |:---- |:---- |
@@ -521,9 +525,22 @@ Usage: `hdfs debug verify [-meta <metadata-file>] [-block <block-file>]`
 
 Verify HDFS metadata and block files. If a block file is specified, we will verify that the checksums in the metadata file match the block file.
 
+### `computeMeta`
+
+Usage: `hdfs debug computeMeta -block <block-file> -out <output-metadata-file>`
+
+| COMMAND\_OPTION | Description |
+|:---- |:---- |
+| `-block` *block-file* | Absolute path for the block file on the local file system of the data node. |
+| `-out` *output-metadata-file* | Absolute path for the output metadata file to store the checksum computation result from the block file. |
+
+Compute HDFS metadata from block files. If a block file is specified, we will compute the checksums from the block file, and save it to the specified output metadata file.
+
+**NOTE**: Use at your own risk! If the block file is corrupt and you overwrite it's meta file, it will show up as 'good' in HDFS, but you can't read the data. Only use as a last measure, and when you are 100% certain the block file is good.
+
 ### `recoverLease`
 
-Usage: `hdfs debug recoverLease [-path <path>] [-retries <num-retries>]`
+Usage: `hdfs debug recoverLease -path <path> [-retries <num-retries>]`
 
 | COMMAND\_OPTION | Description |
 |:---- |:---- |

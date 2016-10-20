@@ -128,20 +128,16 @@ public class NodesListManager extends CompositeService implements
           if (isUntrackedNode(rmNode.getHostName())) {
             if (rmNode.getUntrackedTimeStamp() == 0) {
               rmNode.setUntrackedTimeStamp(now);
-            } else if (now - rmNode.getUntrackedTimeStamp() >
+            } else
+              if (now - rmNode.getUntrackedTimeStamp() >
                   nodeRemovalTimeout) {
-              RMNode result = rmContext.getInactiveRMNodes().remove(nodeId);
-              if (result != null) {
-                ClusterMetrics clusterMetrics = ClusterMetrics.getMetrics();
-                if (rmNode.getState() == NodeState.SHUTDOWN) {
-                  clusterMetrics.decrNumShutdownNMs();
-                } else {
-                  clusterMetrics.decrDecommisionedNMs();
+                RMNode result = rmContext.getInactiveRMNodes().remove(nodeId);
+                if (result != null) {
+                  decrInactiveNMMetrics(rmNode);
+                  LOG.info("Removed " +result.getState().toString() + " node "
+                      + result.getHostName() + " from inactive nodes list");
                 }
-                LOG.info("Removed "+result.getHostName() +
-                    " from inactive nodes list");
               }
-            }
           } else {
             rmNode.setUntrackedTimeStamp(0);
           }
@@ -150,6 +146,26 @@ public class NodesListManager extends CompositeService implements
     }, nodeRemovalCheckInterval, nodeRemovalCheckInterval);
 
     super.serviceInit(conf);
+  }
+
+  private void decrInactiveNMMetrics(RMNode rmNode) {
+    ClusterMetrics clusterMetrics = ClusterMetrics.getMetrics();
+    switch (rmNode.getState()) {
+    case SHUTDOWN:
+      clusterMetrics.decrNumShutdownNMs();
+      break;
+    case DECOMMISSIONED:
+      clusterMetrics.decrDecommisionedNMs();
+      break;
+    case LOST:
+      clusterMetrics.decrNumLostNMs();
+      break;
+    case REBOOTED:
+      clusterMetrics.decrNumRebootedNMs();
+      break;
+    default:
+      LOG.debug("Unexpected node state");
+    }
   }
 
   @Override
@@ -166,10 +182,15 @@ public class NodesListManager extends CompositeService implements
         YarnConfiguration.DEFAULT_RM_NODES_INCLUDE_FILE_PATH) + " out=" +
         conf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH, 
             YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH));
-    for (String include : hostsReader.getHosts()) {
+
+    Set<String> hostsList = new HashSet<String>();
+    Set<String> excludeList = new HashSet<String>();
+    hostsReader.getHostDetails(hostsList, excludeList);
+
+    for (String include : hostsList) {
       LOG.debug("include: " + include);
     }
-    for (String exclude : hostsReader.getExcludedHosts()) {
+    for (String exclude : excludeList) {
       LOG.debug("exclude: " + exclude);
     }
   }
@@ -191,31 +212,23 @@ public class NodesListManager extends CompositeService implements
 
   private void refreshHostsReader(Configuration yarnConf) throws IOException,
       YarnException {
-    synchronized (hostsReader) {
-      if (null == yarnConf) {
-        yarnConf = new YarnConfiguration();
-      }
-      includesFile =
-          yarnConf.get(YarnConfiguration.RM_NODES_INCLUDE_FILE_PATH,
-              YarnConfiguration.DEFAULT_RM_NODES_INCLUDE_FILE_PATH);
-      excludesFile =
-          yarnConf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
-              YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH);
-      hostsReader.updateFileNames(includesFile, excludesFile);
-      hostsReader.refresh(
-          includesFile.isEmpty() ? null : this.rmContext
-              .getConfigurationProvider().getConfigurationInputStream(
-                  this.conf, includesFile), excludesFile.isEmpty() ? null
-              : this.rmContext.getConfigurationProvider()
-                  .getConfigurationInputStream(this.conf, excludesFile));
-      printConfiguredHosts();
+    if (null == yarnConf) {
+      yarnConf = new YarnConfiguration();
     }
+    includesFile =
+        yarnConf.get(YarnConfiguration.RM_NODES_INCLUDE_FILE_PATH,
+            YarnConfiguration.DEFAULT_RM_NODES_INCLUDE_FILE_PATH);
+    excludesFile =
+        yarnConf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
+            YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH);
+    hostsReader.refresh(includesFile, excludesFile);
+    printConfiguredHosts();
   }
 
   private void setDecomissionedNMs() {
     Set<String> excludeList = hostsReader.getExcludedHosts();
     for (final String host : excludeList) {
-      UnknownNodeId nodeId = new UnknownNodeId(host);
+      NodeId nodeId = createUnknownNodeId(host);
       RMNodeImpl rmNode = new RMNodeImpl(nodeId,
           rmContext, host, -1, -1, new UnknownNode(host), null, null);
       rmContext.getInactiveRMNodes().put(nodeId, rmNode);
@@ -347,13 +360,13 @@ public class NodesListManager extends CompositeService implements
 
   public boolean isValidNode(String hostName) {
     String ip = resolver.resolve(hostName);
-    synchronized (hostsReader) {
-      Set<String> hostsList = hostsReader.getHosts();
-      Set<String> excludeList = hostsReader.getExcludedHosts();
-      return (hostsList.isEmpty() || hostsList.contains(hostName) || hostsList
-          .contains(ip))
-          && !(excludeList.contains(hostName) || excludeList.contains(ip));
-    }
+    Set<String> hostsList = new HashSet<String>();
+    Set<String> excludeList = new HashSet<String>();
+    hostsReader.getHostDetails(hostsList, excludeList);
+
+    return (hostsList.isEmpty() || hostsList.contains(hostName) || hostsList
+        .contains(ip))
+        && !(excludeList.contains(hostName) || excludeList.contains(ip));
   }
 
   @Override
@@ -450,17 +463,15 @@ public class NodesListManager extends CompositeService implements
   }
 
   public boolean isUntrackedNode(String hostName) {
-    boolean untracked;
     String ip = resolver.resolve(hostName);
 
-    synchronized (hostsReader) {
-      Set<String> hostsList = hostsReader.getHosts();
-      Set<String> excludeList = hostsReader.getExcludedHosts();
-      untracked = !hostsList.isEmpty() &&
-          !hostsList.contains(hostName) && !hostsList.contains(ip) &&
-          !excludeList.contains(hostName) && !excludeList.contains(ip);
-    }
-    return untracked;
+    Set<String> hostsList = new HashSet<String>();
+    Set<String> excludeList = new HashSet<String>();
+    hostsReader.getHostDetails(hostsList, excludeList);
+
+    return !hostsList.isEmpty() && !hostsList.contains(hostName)
+        && !hostsList.contains(ip) && !excludeList.contains(hostName)
+        && !excludeList.contains(ip);
   }
 
   /**
@@ -525,38 +536,8 @@ public class NodesListManager extends CompositeService implements
    * A NodeId instance needed upon startup for populating inactive nodes Map.
    * It only knows the hostname/ip and marks the port to -1 or invalid.
    */
-  public static class UnknownNodeId extends NodeId {
-
-    private String host;
-
-    public UnknownNodeId(String host) {
-      this.host = host;
-    }
-
-    @Override
-    public String getHost() {
-      return this.host;
-    }
-
-    @Override
-    protected void setHost(String hst) {
-
-    }
-
-    @Override
-    public int getPort() {
-      return -1;
-    }
-
-    @Override
-    protected void setPort(int port) {
-
-    }
-
-    @Override
-    protected void build() {
-
-    }
+  public static NodeId createUnknownNodeId(String host) {
+    return NodeId.newInstance(host, -1);
   }
 
   /**

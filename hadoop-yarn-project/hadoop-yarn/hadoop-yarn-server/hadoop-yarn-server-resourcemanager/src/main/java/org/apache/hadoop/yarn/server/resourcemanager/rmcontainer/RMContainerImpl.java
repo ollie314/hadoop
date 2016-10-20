@@ -345,7 +345,7 @@ public class RMContainerImpl implements RMContainer, Comparable<RMContainer> {
       logURL.append(WebAppUtils.getHttpSchemePrefix(rmContext
           .getYarnConfiguration()));
       logURL.append(WebAppUtils.getRunningLogURL(
-          container.getNodeHttpAddress(), ConverterUtils.toString(containerId),
+          container.getNodeHttpAddress(), containerId.toString(),
           user));
       return logURL.toString();
     } finally {
@@ -708,7 +708,7 @@ public class RMContainerImpl implements RMContainer, Comparable<RMContainer> {
           }
         
         long usedMillis = container.finishTime - container.creationTime;
-        long memorySeconds = resource.getMemory()
+        long memorySeconds = resource.getMemorySize()
                               * usedMillis / DateUtils.MILLIS_PER_SECOND;
         long vcoreSeconds = resource.getVirtualCores()
                              * usedMillis / DateUtils.MILLIS_PER_SECOND;

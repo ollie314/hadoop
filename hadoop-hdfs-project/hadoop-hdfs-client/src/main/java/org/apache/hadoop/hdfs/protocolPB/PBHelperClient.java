@@ -36,6 +36,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import org.apache.hadoop.crypto.CipherOption;
 import org.apache.hadoop.crypto.CipherSuite;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.CacheFlag;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
@@ -94,6 +95,7 @@ import org.apache.hadoop.hdfs.protocol.proto.AclProtos.AclEntryProto.AclEntryTyp
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.AclEntryProto.FsActionProto;
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.AclStatusProto;
 import org.apache.hadoop.hdfs.protocol.proto.AclProtos.GetAclStatusResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.AddBlockFlagProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveEntryProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoExpirationProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoProto;
@@ -278,6 +280,7 @@ public class PBHelperClient {
         .setId(convert((DatanodeID) info))
         .setCapacity(info.getCapacity())
         .setDfsUsed(info.getDfsUsed())
+        .setNonDfsUsed(info.getNonDfsUsed())
         .setRemaining(info.getRemaining())
         .setBlockPoolUsed(info.getBlockPoolUsed())
         .setCacheCapacity(info.getCacheCapacity())
@@ -541,15 +544,24 @@ public class PBHelperClient {
   }
 
   static public DatanodeInfo convert(DatanodeInfoProto di) {
-    if (di == null) return null;
-    return new DatanodeInfo(
-        convert(di.getId()),
-        di.hasLocation() ? di.getLocation() : null,
-        di.getCapacity(),  di.getDfsUsed(),  di.getRemaining(),
-        di.getBlockPoolUsed(), di.getCacheCapacity(), di.getCacheUsed(),
-        di.getLastUpdate(), di.getLastUpdateMonotonic(),
-        di.getXceiverCount(), convert(di.getAdminState()),
+    if (di == null) {
+      return null;
+    }
+    DatanodeInfo dinfo = new DatanodeInfo(convert(di.getId()),
+        di.hasLocation() ? di.getLocation() : null, di.getCapacity(),
+        di.getDfsUsed(), di.getRemaining(), di.getBlockPoolUsed(),
+        di.getCacheCapacity(), di.getCacheUsed(), di.getLastUpdate(),
+        di.getLastUpdateMonotonic(), di.getXceiverCount(),
+        convert(di.getAdminState()),
         di.hasUpgradeDomain() ? di.getUpgradeDomain() : null);
+    if (di.hasNonDfsUsed()) {
+      dinfo.setNonDfsUsed(di.getNonDfsUsed());
+    } else {
+      // use the legacy way for older datanodes
+      long nonDFSUsed = di.getCapacity() - di.getDfsUsed() - di.getRemaining();
+      dinfo.setNonDfsUsed(nonDFSUsed < 0 ? 0 : nonDFSUsed);
+    }
+    return dinfo;
   }
 
   public static StorageType[] convertStorageTypes(
@@ -1362,6 +1374,10 @@ public class PBHelperClient {
     builder.length(cs.getLength()).
         fileCount(cs.getFileCount()).
         directoryCount(cs.getDirectoryCount()).
+        snapshotLength(cs.getSnapshotLength()).
+        snapshotFileCount(cs.getSnapshotFileCount()).
+        snapshotDirectoryCount(cs.getSnapshotDirectoryCount()).
+        snapshotSpaceConsumed(cs.getSnapshotSpaceConsumed()).
         quota(cs.getQuota()).
         spaceConsumed(cs.getSpaceConsumed()).
         spaceQuota(cs.getSpaceQuota());
@@ -1448,12 +1464,12 @@ public class PBHelperClient {
   }
 
   public static StorageReport convert(StorageReportProto p) {
-    return new StorageReport(
-        p.hasStorage() ?
-            convert(p.getStorage()) :
-            new DatanodeStorage(p.getStorageUuid()),
-        p.getFailed(), p.getCapacity(), p.getDfsUsed(), p.getRemaining(),
-        p.getBlockPoolUsed());
+    long nonDfsUsed = p.hasNonDfsUsed() ? p.getNonDfsUsed() : p.getCapacity()
+        - p.getDfsUsed() - p.getRemaining();
+    return new StorageReport(p.hasStorage() ? convert(p.getStorage())
+        : new DatanodeStorage(p.getStorageUuid()), p.getFailed(),
+        p.getCapacity(), p.getDfsUsed(), p.getRemaining(),
+        p.getBlockPoolUsed(), nonDfsUsed);
   }
 
   public static DatanodeStorage convert(DatanodeStorageProto s) {
@@ -1956,6 +1972,10 @@ public class PBHelperClient {
     builder.setLength(cs.getLength()).
         setFileCount(cs.getFileCount()).
         setDirectoryCount(cs.getDirectoryCount()).
+        setSnapshotLength(cs.getSnapshotLength()).
+        setSnapshotFileCount(cs.getSnapshotFileCount()).
+        setSnapshotDirectoryCount(cs.getSnapshotDirectoryCount()).
+        setSnapshotSpaceConsumed(cs.getSnapshotSpaceConsumed()).
         setQuota(cs.getQuota()).
         setSpaceConsumed(cs.getSpaceConsumed()).
         setSpaceQuota(cs.getSpaceQuota());
@@ -2015,7 +2035,8 @@ public class PBHelperClient {
         .setBlockPoolUsed(r.getBlockPoolUsed()).setCapacity(r.getCapacity())
         .setDfsUsed(r.getDfsUsed()).setRemaining(r.getRemaining())
         .setStorageUuid(r.getStorage().getStorageID())
-        .setStorage(convert(r.getStorage()));
+        .setStorage(convert(r.getStorage()))
+        .setNonDfsUsed(r.getNonDfsUsed());
     return builder.build();
   }
 
@@ -2393,5 +2414,30 @@ public class PBHelperClient {
           .addAllDatanodes(convert(targets[i])).build();
     }
     return Arrays.asList(ret);
+  }
+
+  public static EnumSet<AddBlockFlag> convertAddBlockFlags(
+      List<AddBlockFlagProto> addBlockFlags) {
+    EnumSet<AddBlockFlag> flags =
+        EnumSet.noneOf(AddBlockFlag.class);
+    for (AddBlockFlagProto af : addBlockFlags) {
+      AddBlockFlag flag = AddBlockFlag.valueOf((short)af.getNumber());
+      if (flag != null) {
+        flags.add(flag);
+      }
+    }
+    return flags;
+  }
+
+  public static List<AddBlockFlagProto> convertAddBlockFlags(
+      EnumSet<AddBlockFlag> flags) {
+    List<AddBlockFlagProto> ret = new ArrayList<>();
+    for (AddBlockFlag flag : flags) {
+      AddBlockFlagProto abfp = AddBlockFlagProto.valueOf(flag.getMode());
+      if (abfp != null) {
+        ret.add(abfp);
+      }
+    }
+    return ret;
   }
 }

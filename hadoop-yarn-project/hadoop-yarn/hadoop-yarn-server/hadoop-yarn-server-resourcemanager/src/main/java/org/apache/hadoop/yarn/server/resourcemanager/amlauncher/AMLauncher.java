@@ -51,6 +51,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.client.NMProxy;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
@@ -78,7 +79,7 @@ public class AMLauncher implements Runnable {
   private final AMLauncherEventType eventType;
   private final RMContext rmContext;
   private final Container masterContainer;
-  
+
   @SuppressWarnings("rawtypes")
   private final EventHandler handler;
   
@@ -185,16 +186,24 @@ public class AMLauncher implements Runnable {
     // Construct the actual Container
     ContainerLaunchContext container = 
         applicationMasterContext.getAMContainerSpec();
-    LOG.info("Command to launch container "
-        + containerID
-        + " : "
-        + StringUtils.arrayToString(container.getCommands().toArray(
-            new String[0])));
-    
+
+    // Populate the current queue name in the environment variable.
+    setupQueueNameEnv(container, applicationMasterContext);
+
     // Finalize the container
     setupTokens(container, containerID);
-    
+
     return container;
+  }
+
+  private void setupQueueNameEnv(ContainerLaunchContext container,
+      ApplicationSubmissionContext applicationMasterContext) {
+    String queueName = applicationMasterContext.getQueue();
+    if (queueName == null) {
+      queueName = YarnConfiguration.DEFAULT_QUEUE_NAME;
+    }
+    container.getEnvironment().put(ApplicationConstants.Environment
+            .YARN_RESOURCEMANAGER_APPLICATION_QUEUE.key(), queueName);
   }
 
   @Private

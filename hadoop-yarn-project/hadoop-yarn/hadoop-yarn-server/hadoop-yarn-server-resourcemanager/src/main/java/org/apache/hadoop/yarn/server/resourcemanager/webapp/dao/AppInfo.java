@@ -82,8 +82,9 @@ public class AppInfo {
   protected long elapsedTime;
   protected String amContainerLogs;
   protected String amHostHttpAddress;
-  protected int allocatedMB;
-  protected int allocatedVCores;
+  private String amRPCAddress;
+  protected long allocatedMB;
+  protected long allocatedVCores;
   protected int runningContainers;
   protected long memorySeconds;
   protected long vcoreSeconds;
@@ -91,8 +92,8 @@ public class AppInfo {
   protected float clusterUsagePercentage;
 
   // preemption info fields
-  protected int preemptedResourceMB;
-  protected int preemptedResourceVCores;
+  protected long preemptedResourceMB;
+  protected long preemptedResourceVCores;
   protected int numNonAMContainerPreempted;
   protected int numAMContainerPreempted;
 
@@ -165,16 +166,17 @@ public class AppInfo {
             this.amContainerLogsExist = true;
             this.amContainerLogs = WebAppUtils.getRunningLogURL(
                 schemePrefix + masterContainer.getNodeHttpAddress(),
-                ConverterUtils.toString(masterContainer.getId()),
-                app.getUser());
+                masterContainer.getId().toString(), app.getUser());
             this.amHostHttpAddress = masterContainer.getNodeHttpAddress();
           }
-          
+
+          this.amRPCAddress = getAmRPCAddressFromRMAppAttempt(attempt);
+
           ApplicationResourceUsageReport resourceReport = attempt
               .getApplicationResourceUsageReport();
           if (resourceReport != null) {
             Resource usedResources = resourceReport.getUsedResources();
-            allocatedMB = usedResources.getMemory();
+            allocatedMB = usedResources.getMemorySize();
             allocatedVCores = usedResources.getVirtualCores();
             runningContainers = resourceReport.getNumUsedContainers();
             queueUsagePercentage = resourceReport.getQueueUsagePercentage();
@@ -190,7 +192,7 @@ public class AppInfo {
       numAMContainerPreempted =
           appMetrics.getNumAMContainersPreempted();
       preemptedResourceMB =
-          appMetrics.getResourcePreempted().getMemory();
+          appMetrics.getResourcePreempted().getMemorySize();
       numNonAMContainerPreempted =
           appMetrics.getNumNonAMContainersPreempted();
       preemptedResourceVCores =
@@ -282,6 +284,22 @@ public class AppInfo {
     return this.amHostHttpAddress;
   }
 
+  public String getAmRPCAddress() {
+    return amRPCAddress;
+  }
+
+  static public String getAmRPCAddressFromRMAppAttempt(RMAppAttempt attempt) {
+    String amRPCAddress = null;
+    if (attempt != null) {
+      String amHost = attempt.getHost();
+      int amRpcPort = attempt.getRpcPort();
+      if (!"N/A".equals(amHost) && amRpcPort != -1) {
+        amRPCAddress = amHost + ":" + amRpcPort;
+      }
+    }
+    return amRPCAddress;
+  }
+
   public boolean amContainerLogsExist() {
     return this.amContainerLogsExist;
   }
@@ -302,19 +320,19 @@ public class AppInfo {
     return this.runningContainers;
   }
   
-  public int getAllocatedMB() {
+  public long getAllocatedMB() {
     return this.allocatedMB;
   }
   
-  public int getAllocatedVCores() {
+  public long getAllocatedVCores() {
     return this.allocatedVCores;
   }
   
-  public int getPreemptedMB() {
+  public long getPreemptedMB() {
     return preemptedResourceMB;
   }
 
-  public int getPreemptedVCores() {
+  public long getPreemptedVCores() {
     return preemptedResourceVCores;
   }
 

@@ -40,6 +40,9 @@ public class ApplicationMetricsConstants {
   public static final String UPDATED_EVENT_TYPE =
       "YARN_APPLICATION_UPDATED";
 
+  public static final String STATE_UPDATED_EVENT_TYPE =
+      "YARN_APPLICATION_STATE_UPDATED";
+
   public static final String NAME_ENTITY_INFO =
       "YARN_APPLICATION_NAME";
 
@@ -95,4 +98,7 @@ public class ApplicationMetricsConstants {
 
   public static final String AM_NODE_LABEL_EXPRESSION =
       "YARN_AM_NODE_LABEL_EXPRESSION";
+
+  public static final String AM_CONTAINER_LAUNCH_COMMAND =
+      "YARN_AM_CONTAINER_LAUNCH_COMMAND";
 }

@@ -471,7 +471,7 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
   }
 
   /** Stop renewal of lease for the file. */
-  void endFileLease(final long inodeId) throws IOException {
+  void endFileLease(final long inodeId) {
     getLeaseRenewer().closeFile(inodeId, this);
   }
 
@@ -1502,6 +1502,24 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
   }
 
   /**
+   * Unset storage policy set for a given file/directory.
+   * @param src file/directory name
+   */
+  public void unsetStoragePolicy(String src) throws IOException {
+    checkOpen();
+    try (TraceScope ignored = newPathTraceScope("unsetStoragePolicy", src)) {
+      namenode.unsetStoragePolicy(src);
+    } catch (RemoteException e) {
+      throw e.unwrapRemoteException(AccessControlException.class,
+          FileNotFoundException.class,
+          SafeModeException.class,
+          NSQuotaExceededException.class,
+          UnresolvedPathException.class,
+          SnapshotAccessControlException.class);
+    }
+  }
+
+  /**
    * @param path file/directory name
    * @return Get the storage policy for specified path
    */
@@ -1752,6 +1770,11 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     } else {
       return null;
     }
+  }
+
+  @VisibleForTesting
+  public DataEncryptionKey getEncryptionKey() {
+    return encryptionKey;
   }
 
   /**
@@ -2566,7 +2589,7 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     if ((namespaceQuota <= 0 &&
           namespaceQuota != HdfsConstants.QUOTA_DONT_SET &&
           namespaceQuota != HdfsConstants.QUOTA_RESET) ||
-        (storagespaceQuota <= 0 &&
+        (storagespaceQuota < 0 &&
             storagespaceQuota != HdfsConstants.QUOTA_DONT_SET &&
             storagespaceQuota != HdfsConstants.QUOTA_RESET)) {
       throw new IllegalArgumentException("Invalid values for quota : " +
@@ -2784,8 +2807,8 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     try (TraceScope ignored = newPathTraceScope("getEZForPath", src)) {
       return namenode.getEZForPath(src);
     } catch (RemoteException re) {
-      throw re.unwrapRemoteException(FileNotFoundException.class,
-          AccessControlException.class, UnresolvedPathException.class);
+      throw re.unwrapRemoteException(AccessControlException.class,
+          UnresolvedPathException.class);
     }
   }
 

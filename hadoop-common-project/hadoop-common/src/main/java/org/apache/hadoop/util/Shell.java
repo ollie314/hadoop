@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,7 +42,7 @@ import org.slf4j.LoggerFactory;
  * A base class for running a Shell command.
  *
  * <code>Shell</code> can be used to run shell commands like <code>du</code> or
- * <code>df</code>. It also offers facilities to gate commands by 
+ * <code>df</code>. It also offers facilities to gate commands by
  * time-intervals.
  */
 @InterfaceAudience.Public
@@ -117,6 +118,21 @@ public abstract class Shell {
     }
   }
 
+  /**
+   * Quote the given arg so that bash will interpret it as a single value.
+   * Note that this quotes it for one level of bash, if you are passing it
+   * into a badly written shell script, you need to fix your shell script.
+   * @param arg the argument to quote
+   * @return the quoted string
+   */
+  static String bashQuote(String arg) {
+    StringBuilder buffer = new StringBuilder(arg.length() + 2);
+    buffer.append('\'');
+    buffer.append(arg.replace("'", "'\\''"));
+    buffer.append('\'');
+    return buffer.toString();
+  }
+
   /** a Unix command to get the current user's name: {@value}. */
   public static final String USER_NAME_COMMAND = "whoami";
 
@@ -172,7 +188,7 @@ public abstract class Shell {
   /** a Unix command to get the current user's groups list. */
   public static String[] getGroupsCommand() {
     return (WINDOWS)? new String[]{"cmd", "/c", "groups"}
-                    : new String[]{"bash", "-c", "groups"};
+                    : new String[]{"groups"};
   }
 
   /**
@@ -183,10 +199,14 @@ public abstract class Shell {
    */
   public static String[] getGroupsForUserCommand(final String user) {
     //'groups username' command return is inconsistent across different unixes
-    return WINDOWS ?
-      new String[]
-          {getWinUtilsPath(), "groups", "-F", "\"" + user + "\""}
-      : new String[] {"bash", "-c", "id -gn " + user + "; id -Gn " + user};
+    if (WINDOWS) {
+      return new String[]
+          {getWinUtilsPath(), "groups", "-F", "\"" + user + "\""};
+    } else {
+      String quotedUser = bashQuote(user);
+      return new String[] {"bash", "-c", "id -gn " + quotedUser +
+                            "; id -Gn " + quotedUser};
+    }
   }
 
   /**
@@ -198,17 +218,20 @@ public abstract class Shell {
    */
   public static String[] getGroupsIDForUserCommand(final String user) {
     //'groups username' command return is inconsistent across different unixes
-    return WINDOWS ?
-        new String[]
-            {getWinUtilsPath(), "groups", "-F", "\"" + user + "\""}
-        : new String[] {"bash", "-c", "id -g " + user + "; id -G " + user};
+    if (WINDOWS) {
+      return new String[]{getWinUtilsPath(), "groups", "-F", "\"" + user +
+                           "\""};
+    } else {
+      String quotedUser = bashQuote(user);
+      return new String[] {"bash", "-c", "id -g " + quotedUser + "; id -G " +
+                            quotedUser};
+    }
   }
 
   /** A command to get a given netgroup's user list. */
   public static String[] getUsersForNetgroupCommand(final String netgroup) {
     //'groups username' command return is non-consistent across different unixes
-    return WINDOWS ? new String [] {"cmd", "/c", "getent netgroup " + netgroup}
-                    : new String [] {"bash", "-c", "getent netgroup " + netgroup};
+    return new String[] {"getent", "netgroup", netgroup};
   }
 
   /** Return a command to get permission information. */
@@ -232,14 +255,15 @@ public abstract class Shell {
 
   /**
    * Return a command to set permission for specific file.
-   * 
+   *
    * @param perm String permission to set
    * @param recursive boolean true to apply to all sub-directories recursively
    * @param file String file to set
    * @return String[] containing command and arguments
    */
   public static String[] getSetPermissionCommand(String perm,
-      boolean recursive, String file) {
+                                                 boolean recursive,
+                                                 String file) {
     String[] baseCmd = getSetPermissionCommand(perm, recursive);
     String[] cmdWithFile = Arrays.copyOf(baseCmd, baseCmd.length + 1);
     cmdWithFile[cmdWithFile.length - 1] = file;
@@ -287,11 +311,16 @@ public abstract class Shell {
       }
     }
 
+    // Use the bash-builtin instead of the Unix kill command (usually
+    // /bin/kill) as the bash-builtin supports "--" in all Hadoop supported
+    // OSes.
+    final String quotedPid = bashQuote(pid);
     if (isSetsidAvailable) {
-      // Use the shell-builtin as it support "--" in all Hadoop supported OSes
-      return new String[] { "bash", "-c", "kill -" + code + " -- -" + pid };
+      return new String[] { "bash", "-c", "kill -" + code + " -- -" +
+          quotedPid };
     } else {
-      return new String[] { "bash", "-c", "kill -" + code + " " + pid };
+      return new String[] { "bash", "-c", "kill -" + code + " " +
+          quotedPid };
     }
   }
 
@@ -309,7 +338,7 @@ public abstract class Shell {
    * Returns a File referencing a script with the given basename, inside the
    * given parent directory.  The file extension is inferred by platform:
    * <code>".cmd"</code> on Windows, or <code>".sh"</code> otherwise.
-   * 
+   *
    * @param parent File parent directory
    * @param basename String script file basename
    * @return File referencing the script in the directory
@@ -341,8 +370,8 @@ public abstract class Shell {
   public static String[] getRunScriptCommand(File script) {
     String absolutePath = script.getAbsolutePath();
     return WINDOWS ?
-      new String[] { "cmd", "/c", absolutePath }
-      : new String[] { "/bin/bash", absolutePath };
+      new String[] {"cmd", "/c", absolutePath }
+      : new String[] {"bash", bashQuote(absolutePath) };
   }
 
   /** a Unix command to set permission: {@value}. */
@@ -361,6 +390,9 @@ public abstract class Shell {
   protected long timeOutInterval = 0L;
   /** If or not script timed out*/
   private final AtomicBoolean timedOut = new AtomicBoolean(false);
+
+  /** Indicates if the parent env vars should be inherited or not*/
+  protected boolean inheritParentEnv = true;
 
   /**
    *  Centralized logic to discover and validate the sanity of the Hadoop
@@ -523,11 +555,11 @@ public abstract class Shell {
 
   /**
    *  Fully qualify the path to a binary that should be in a known hadoop
-   *  bin location. This is primarily useful for disambiguating call-outs 
-   *  to executable sub-components of Hadoop to avoid clashes with other 
-   *  executables that may be in the path.  Caveat:  this call doesn't 
-   *  just format the path to the bin directory.  It also checks for file 
-   *  existence of the composed path. The output of this call should be 
+   *  bin location. This is primarily useful for disambiguating call-outs
+   *  to executable sub-components of Hadoop to avoid clashes with other
+   *  executables that may be in the path.  Caveat:  this call doesn't
+   *  just format the path to the bin directory.  It also checks for file
+   *  existence of the composed path. The output of this call should be
    *  cached by callers.
    *
    * @param executable executable
@@ -836,7 +868,7 @@ public abstract class Shell {
   }
 
   /** Run the command. */
-  private void runCommand() throws IOException { 
+  private void runCommand() throws IOException {
     ProcessBuilder builder = new ProcessBuilder(getExecString());
     Timer timeOutTimer = null;
     ShellTimeoutTimerTask timeoutTimerTask = null;
@@ -846,12 +878,26 @@ public abstract class Shell {
     if (environment != null) {
       builder.environment().putAll(this.environment);
     }
+
+    // Remove all env vars from the Builder to prevent leaking of env vars from
+    // the parent process.
+    if (!inheritParentEnv) {
+      // branch-2: Only do this for HADOOP_CREDSTORE_PASSWORD
+      // Sometimes daemons are configured to use the CredentialProvider feature
+      // and given their jceks password via an environment variable.  We need to
+      // make sure to remove it so it doesn't leak to child processes, which
+      // might be owned by a different user.  For example, the NodeManager
+      // running a User's container.
+      builder.environment().remove(
+          AbstractJavaKeyStoreProvider.CREDENTIAL_PASSWORD_ENV_VAR);
+    }
+
     if (dir != null) {
       builder.directory(this.dir);
     }
 
     builder.redirectErrorStream(redirectErrorStream);
-    
+
     if (Shell.WINDOWS) {
       synchronized (WindowsProcessLaunchLock) {
         // To workaround the race condition issue with child processes
@@ -872,7 +918,7 @@ public abstract class Shell {
       //One time scheduling.
       timeOutTimer.schedule(timeoutTimerTask, timeOutInterval);
     }
-    final BufferedReader errReader = 
+    final BufferedReader errReader =
             new BufferedReader(new InputStreamReader(
                 process.getErrorStream(), Charset.defaultCharset()));
     BufferedReader inReader =
@@ -910,7 +956,7 @@ public abstract class Shell {
       parseExecResult(inReader); // parse the output
       // clear the input stream buffer
       String line = inReader.readLine();
-      while(line != null) { 
+      while(line != null) {
         line = inReader.readLine();
       }
       // wait for the process to finish and check the exit code
@@ -1047,13 +1093,13 @@ public abstract class Shell {
 
   /**
    * A simple shell command executor.
-   * 
+   *
    * <code>ShellCommandExecutor</code>should be used in cases where the output
    * of the command needs no explicit parsing and where the command, working
    * directory and the environment remains unchanged. The output of the command
    * is stored as-is and is expected to be small.
    */
-  public static class ShellCommandExecutor extends Shell 
+  public static class ShellCommandExecutor extends Shell
       implements CommandExecutor {
 
     private String[] command;
@@ -1073,9 +1119,14 @@ public abstract class Shell {
       this(execString, dir, env , 0L);
     }
 
+    public ShellCommandExecutor(String[] execString, File dir,
+                                Map<String, String> env, long timeout) {
+      this(execString, dir, env , timeout, true);
+    }
+
     /**
      * Create a new instance of the ShellCommandExecutor to execute a command.
-     * 
+     *
      * @param execString The command to execute with arguments
      * @param dir If not-null, specifies the directory which should be set
      *            as the current working directory for the command.
@@ -1085,10 +1136,12 @@ public abstract class Shell {
      *            environment is not modified.
      * @param timeout Specifies the time in milliseconds, after which the
      *                command will be killed and the status marked as timed-out.
-     *                If 0, the command will not be timed out. 
+     *                If 0, the command will not be timed out.
+     * @param inheritParentEnv Indicates if the process should inherit the env
+     *                         vars from the parent process or not.
      */
-    public ShellCommandExecutor(String[] execString, File dir, 
-        Map<String, String> env, long timeout) {
+    public ShellCommandExecutor(String[] execString, File dir,
+        Map<String, String> env, long timeout, boolean inheritParentEnv) {
       command = execString.clone();
       if (dir != null) {
         setWorkingDirectory(dir);
@@ -1097,6 +1150,7 @@ public abstract class Shell {
         setEnvironment(env);
       }
       timeOutInterval = timeout;
+      this.inheritParentEnv = inheritParentEnv;
     }
 
     /**
@@ -1111,7 +1165,7 @@ public abstract class Shell {
               + StringUtils.join(" ", command));
         }
       }
-      this.run();    
+      this.run();
     }
 
     @Override
@@ -1164,7 +1218,7 @@ public abstract class Shell {
   /**
    * To check if the passed script to shell command executor timed out or
    * not.
-   * 
+   *
    * @return if the script timed out.
    */
   public boolean isTimedOut() {
@@ -1173,15 +1227,15 @@ public abstract class Shell {
 
   /**
    * Declare that the command has timed out.
-   * 
+   *
    */
   private void setTimedOut() {
     this.timedOut.set(true);
   }
 
-  /** 
-   * Static method to execute a shell command. 
-   * Covers most of the simple cases without requiring the user to implement  
+  /**
+   * Static method to execute a shell command.
+   * Covers most of the simple cases without requiring the user to implement
    * the <code>Shell</code> interface.
    * @param cmd shell command to execute.
    * @return the output of the executed command.
@@ -1203,7 +1257,7 @@ public abstract class Shell {
 
   public static String execCommand(Map<String, String> env, String[] cmd,
       long timeout) throws IOException {
-    ShellCommandExecutor exec = new ShellCommandExecutor(cmd, null, env, 
+    ShellCommandExecutor exec = new ShellCommandExecutor(cmd, null, env,
                                                           timeout);
     exec.execute();
     return exec.getOutput();
@@ -1241,7 +1295,7 @@ public abstract class Shell {
         p.exitValue();
       } catch (Exception e) {
         //Process has not terminated.
-        //So check if it has completed 
+        //So check if it has completed
         //if not just destroy it.
         if (p != null && !shell.completed.get()) {
           shell.setTimedOut();

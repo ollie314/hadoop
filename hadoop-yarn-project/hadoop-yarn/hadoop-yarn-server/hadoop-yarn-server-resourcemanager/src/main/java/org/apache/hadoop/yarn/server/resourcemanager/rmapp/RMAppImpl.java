@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
@@ -74,6 +75,8 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
 import org.apache.hadoop.yarn.server.resourcemanager.ApplicationMasterService;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAppManagerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAppManagerEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger;
+import org.apache.hadoop.yarn.server.resourcemanager.RMAuditLogger.AuditConstants;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.blacklist.BlacklistManager;
@@ -247,7 +250,8 @@ public class RMAppImpl implements RMApp, Recoverable {
     .addTransition(RMAppState.ACCEPTED, RMAppState.ACCEPTED,
         RMAppEventType.MOVE, new RMAppMoveTransition())
     .addTransition(RMAppState.ACCEPTED, RMAppState.RUNNING,
-        RMAppEventType.ATTEMPT_REGISTERED)
+        RMAppEventType.ATTEMPT_REGISTERED, new RMAppStateUpdateTransition(
+            YarnApplicationState.RUNNING))
     .addTransition(RMAppState.ACCEPTED,
         EnumSet.of(RMAppState.ACCEPTED, RMAppState.FINAL_SAVING),
         // ACCEPTED state is possible to receive ATTEMPT_FAILED/ATTEMPT_FINISHED
@@ -387,8 +391,8 @@ public class RMAppImpl implements RMApp, Recoverable {
                                                                  stateMachine;
 
   private static final int DUMMY_APPLICATION_ATTEMPT_NUMBER = -1;
-  private static final float MINIMUM_THRESHOLD_VALUE = 0.0f;
-  private static final float MAXIMUM_THRESHOLD_VALUE = 1.0f;
+  private static final float MINIMUM_AM_BLACKLIST_THRESHOLD_VALUE = 0.0f;
+  private static final float MAXIMUM_AM_BLACKLIST_THRESHOLD_VALUE = 1.0f;
 
   public RMAppImpl(ApplicationId applicationId, RMContext rmContext,
       Configuration config, String name, String user, String queue,
@@ -467,42 +471,24 @@ public class RMAppImpl implements RMApp, Recoverable {
         YarnConfiguration.RM_MAX_LOG_AGGREGATION_DIAGNOSTICS_IN_MEMORY,
         YarnConfiguration.DEFAULT_RM_MAX_LOG_AGGREGATION_DIAGNOSTICS_IN_MEMORY);
 
-    // amBlacklistingEnabled can be configured globally and by each
-    // application.
-    // Case 1: If AMBlackListRequest is available in submission context, we
-    // will consider only app level request (RM level configuration will be
-    // skipped).
-    // Case 2: AMBlackListRequest is available in submission context and
-    // amBlacklisting is disabled. In this case, AM blacklisting wont be
-    // enabled for this app even if this feature is enabled in RM level.
-    // Case 3: AMBlackListRequest is not available through submission context.
-    // RM level AM black listing configuration will be considered.
-    if (null != submissionContext.getAMBlackListRequest()) {
-      amBlacklistingEnabled = submissionContext.getAMBlackListRequest()
-          .isAMBlackListingEnabled();
-      blacklistDisableThreshold = 0.0f;
-      if (amBlacklistingEnabled) {
-        blacklistDisableThreshold = submissionContext.getAMBlackListRequest()
-            .getBlackListingDisableFailureThreshold();
-
-        // Verify whether blacklistDisableThreshold is valid. And for invalid
-        // threshold, reset to global level blacklistDisableThreshold
-        // configured.
-        if (blacklistDisableThreshold < MINIMUM_THRESHOLD_VALUE
-            || blacklistDisableThreshold > MAXIMUM_THRESHOLD_VALUE) {
-          blacklistDisableThreshold = conf.getFloat(
-              YarnConfiguration.AM_BLACKLISTING_DISABLE_THRESHOLD,
-              YarnConfiguration.DEFAULT_AM_BLACKLISTING_DISABLE_THRESHOLD);
-        }
-      }
-    } else {
-      amBlacklistingEnabled = conf.getBoolean(
-          YarnConfiguration.AM_BLACKLISTING_ENABLED,
-          YarnConfiguration.DEFAULT_AM_BLACKLISTING_ENABLED);
-      if (amBlacklistingEnabled) {
-        blacklistDisableThreshold = conf.getFloat(
-            YarnConfiguration.AM_BLACKLISTING_DISABLE_THRESHOLD,
-            YarnConfiguration.DEFAULT_AM_BLACKLISTING_DISABLE_THRESHOLD);
+    // amBlacklistingEnabled can be configured globally
+    // Just use the global values
+    amBlacklistingEnabled =
+        conf.getBoolean(
+          YarnConfiguration.AM_SCHEDULING_NODE_BLACKLISTING_ENABLED,
+          YarnConfiguration.DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_ENABLED);
+    if (amBlacklistingEnabled) {
+      blacklistDisableThreshold = conf.getFloat(
+          YarnConfiguration.AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD,
+          YarnConfiguration.
+          DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD);
+      // Verify whether blacklistDisableThreshold is valid. And for invalid
+      // threshold, reset to global level blacklistDisableThreshold
+      // configured.
+      if (blacklistDisableThreshold < MINIMUM_AM_BLACKLIST_THRESHOLD_VALUE ||
+          blacklistDisableThreshold > MAXIMUM_AM_BLACKLIST_THRESHOLD_VALUE) {
+        blacklistDisableThreshold = YarnConfiguration.
+            DEFAULT_AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD;
       }
     }
   }
@@ -818,7 +804,7 @@ public class RMAppImpl implements RMApp, Recoverable {
 
       if (oldState != getState()) {
         LOG.info(appID + " State change from " + oldState + " to "
-            + getState());
+            + getState() + " on event=" + event.getType());
       }
     } finally {
       this.writeLock.unlock();
@@ -839,8 +825,9 @@ public class RMAppImpl implements RMApp, Recoverable {
     this.startTime = appState.getStartTime();
     this.callerContext = appState.getCallerContext();
 
-    // send the ATS create Event
-    sendATSCreateEvent(this, this.startTime);
+    // send the ATS create Event during RM recovery.
+    // NOTE: it could be duplicated with events sent before RM get restarted.
+    sendATSCreateEvent();
 
     for(int i=0; i<appState.getAttemptCount(); ++i) {
       // create attempt
@@ -853,15 +840,16 @@ public class RMAppImpl implements RMApp, Recoverable {
     ApplicationAttemptId appAttemptId =
         ApplicationAttemptId.newInstance(applicationId, attempts.size() + 1);
 
-    BlacklistManager currentAMBlacklist;
+    BlacklistManager currentAMBlacklistManager;
     if (currentAttempt != null) {
-      currentAMBlacklist = currentAttempt.getAMBlacklist();
+      // Transfer over the blacklist from the previous app-attempt.
+      currentAMBlacklistManager = currentAttempt.getAMBlacklistManager();
     } else {
       if (amBlacklistingEnabled) {
-        currentAMBlacklist = new SimpleBlacklistManager(
+        currentAMBlacklistManager = new SimpleBlacklistManager(
             scheduler.getNumClusterNodes(), blacklistDisableThreshold);
       } else {
-        currentAMBlacklist = new DisabledBlacklistManager();
+        currentAMBlacklistManager = new DisabledBlacklistManager();
       }
     }
     RMAppAttempt attempt =
@@ -872,7 +860,7 @@ public class RMAppImpl implements RMApp, Recoverable {
           // hardware error and NM resync) + 1) equal to the max-attempt
           // limit.
           maxAppAttempts == (getNumFailedAppAttempts() + 1), amReq,
-          currentAMBlacklist);
+          currentAMBlacklistManager);
     attempts.put(appAttemptId, attempt);
     currentAttempt = attempt;
   }
@@ -905,7 +893,21 @@ public class RMAppImpl implements RMApp, Recoverable {
           nodeUpdateEvent.getNode());
     };
   }
-  
+
+  private static final class RMAppStateUpdateTransition
+      extends RMAppTransition {
+    private YarnApplicationState stateToATS;
+
+    public RMAppStateUpdateTransition(YarnApplicationState state) {
+      stateToATS = state;
+    }
+
+    public void transition(RMAppImpl app, RMAppEvent event) {
+      app.rmContext.getSystemMetricsPublisher().appStateUpdated(
+          app, stateToATS, app.systemClock.getTime());
+    };
+  }
+
   private static final class AppRunningOnNodeTransition extends RMAppTransition {
     public void transition(RMAppImpl app, RMAppEvent event) {
       RMAppRunningOnNodeEvent nodeAddedEvent = (RMAppRunningOnNodeEvent) event;
@@ -948,7 +950,7 @@ public class RMAppImpl implements RMApp, Recoverable {
       }
 
       app.rmContext.getSystemMetricsPublisher().appUpdated(app,
-          System.currentTimeMillis());
+          app.systemClock.getTime());
 
       // TODO: Write out change to state store (YARN-1558)
       // Also take care of RM failover
@@ -1025,6 +1027,8 @@ public class RMAppImpl implements RMApp, Recoverable {
     public void transition(RMAppImpl app, RMAppEvent event) {
       app.handler.handle(new AppAddedSchedulerEvent(app.user,
           app.submissionContext, false));
+      // send the ATS create Event
+      app.sendATSCreateEvent();
     }
   }
 
@@ -1103,9 +1107,6 @@ public class RMAppImpl implements RMApp, Recoverable {
       // communication
       LOG.info("Storing application with id " + app.applicationId);
       app.rmContext.getStateStore().storeNewApplication(app);
-
-      // send the ATS create Event
-      app.sendATSCreateEvent(app, app.startTime);
     }
   }
 
@@ -1226,6 +1227,25 @@ public class RMAppImpl implements RMApp, Recoverable {
     };
   }
 
+  /**
+   * Log the audit event for kill by client.
+   *
+   * @param event
+   *          The {@link RMAppEvent} to be logged
+   */
+  static void auditLogKillEvent(RMAppEvent event) {
+    if (event instanceof RMAppKillByClientEvent) {
+      RMAppKillByClientEvent killEvent = (RMAppKillByClientEvent) event;
+      UserGroupInformation callerUGI = killEvent.getCallerUGI();
+      String userName = null;
+      if (callerUGI != null) {
+        userName = callerUGI.getShortUserName();
+      }
+      InetAddress remoteIP = killEvent.getIp();
+      RMAuditLogger.logSuccess(userName, AuditConstants.KILL_APP_REQUEST,
+          "RMAppImpl", event.getApplicationId(), remoteIP);
+    }
+  }
 
   private static class AppKilledTransition extends FinalTransition {
     public AppKilledTransition() {
@@ -1236,6 +1256,7 @@ public class RMAppImpl implements RMApp, Recoverable {
     public void transition(RMAppImpl app, RMAppEvent event) {
       app.diagnostics.append(event.getDiagnosticMsg());
       super.transition(app, event);
+      RMAppImpl.auditLogKillEvent(event);
     };
   }
 
@@ -1249,6 +1270,7 @@ public class RMAppImpl implements RMApp, Recoverable {
       app.handler.handle(
           new RMAppAttemptEvent(app.currentAttempt.getAppAttemptId(),
               RMAppAttemptEventType.KILL, event.getDiagnosticMsg()));
+      RMAppImpl.auditLogKillEvent(event);
     }
   }
 
@@ -1757,18 +1779,8 @@ public class RMAppImpl implements RMApp, Recoverable {
     return callerContext;
   }
 
-  private void sendATSCreateEvent(RMApp app, long startTime) {
-    rmContext.getRMApplicationHistoryWriter().applicationStarted(app);
-    rmContext.getSystemMetricsPublisher().appCreated(app, startTime);
-  }
-
-  @VisibleForTesting
-  public boolean isAmBlacklistingEnabled() {
-    return amBlacklistingEnabled;
-  }
-
-  @VisibleForTesting
-  public float getAmBlacklistingDisableThreshold() {
-    return blacklistDisableThreshold;
+  private void sendATSCreateEvent() {
+    rmContext.getRMApplicationHistoryWriter().applicationStarted(this);
+    rmContext.getSystemMetricsPublisher().appCreated(this, this.startTime);
   }
 }

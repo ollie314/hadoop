@@ -278,7 +278,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
       }
       if (field == ApplicationReportField.USER_AND_ACLS) {
         return new ApplicationReportExt(ApplicationReport.newInstance(
-            ConverterUtils.toApplicationId(entity.getEntityId()),
+            ApplicationId.fromString(entity.getEntityId()),
             latestApplicationAttemptId, user, queue, name, null, -1, null,
             state, diagnosticsInfo, null, createdTime, finishedTime,
             finalStatus, null, null, progress, type, null, appTags,
@@ -351,6 +351,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
       }
     }
     List<TimelineEvent> events = entity.getEvents();
+    long updatedTimeStamp = 0L;
     if (events != null) {
       for (TimelineEvent event : events) {
         if (event.getEventType().equals(
@@ -358,6 +359,16 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           createdTime = event.getTimestamp();
         } else if (event.getEventType().equals(
             ApplicationMetricsConstants.UPDATED_EVENT_TYPE)) {
+          // This type of events are parsed in time-stamp descending order
+          // which means the previous event could override the information
+          // from the later same type of event. Hence compare timestamp
+          // before over writing.
+          if (event.getTimestamp() > updatedTimeStamp) {
+            updatedTimeStamp = event.getTimestamp();
+          } else {
+            continue;
+          }
+
           Map<String, Object> eventInfo = event.getEventInfo();
           if (eventInfo == null) {
             continue;
@@ -369,6 +380,19 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           queue = eventInfo.get(ApplicationMetricsConstants.QUEUE_ENTITY_INFO)
               .toString();
         } else if (event.getEventType().equals(
+              ApplicationMetricsConstants.STATE_UPDATED_EVENT_TYPE)) {
+          Map<String, Object> eventInfo = event.getEventInfo();
+          if (eventInfo == null) {
+            continue;
+          }
+          if (eventInfo.containsKey(
+              ApplicationMetricsConstants.STATE_EVENT_INFO)) {
+            if (!isFinalState(state)) {
+              state = YarnApplicationState.valueOf(eventInfo.get(
+                  ApplicationMetricsConstants.STATE_EVENT_INFO).toString());
+            }
+          }
+        } else if (event.getEventType().equals(
             ApplicationMetricsConstants.FINISHED_EVENT_TYPE)) {
           progress=1.0F;
           finishedTime = event.getTimestamp();
@@ -378,13 +402,10 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           }
           if (eventInfo
               .containsKey(ApplicationMetricsConstants.LATEST_APP_ATTEMPT_EVENT_INFO)) {
-            latestApplicationAttemptId =
-                ConverterUtils
-                    .toApplicationAttemptId(
-                    eventInfo
-                        .get(
-                            ApplicationMetricsConstants.LATEST_APP_ATTEMPT_EVENT_INFO)
-                        .toString());
+            latestApplicationAttemptId = ApplicationAttemptId.fromString(
+                eventInfo.get(
+                    ApplicationMetricsConstants.LATEST_APP_ATTEMPT_EVENT_INFO)
+                    .toString());
           }
           if (eventInfo
               .containsKey(ApplicationMetricsConstants.DIAGNOSTICS_INFO_EVENT_INFO)) {
@@ -410,12 +431,18 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
       }
     }
     return new ApplicationReportExt(ApplicationReport.newInstance(
-        ConverterUtils.toApplicationId(entity.getEntityId()),
+        ApplicationId.fromString(entity.getEntityId()),
         latestApplicationAttemptId, user, queue, name, null, -1, null, state,
         diagnosticsInfo, null, createdTime, finishedTime, finalStatus,
         appResources, null, progress, type, null, appTags, unmanagedApplication,
         Priority.newInstance(applicationPriority), appNodeLabelExpression,
         amNodeLabelExpression), appViewACLs);
+  }
+
+  private static boolean isFinalState(YarnApplicationState state) {
+    return state == YarnApplicationState.FINISHED
+        || state == YarnApplicationState.FAILED
+        || state == YarnApplicationState.KILLED;
   }
 
   private static ApplicationAttemptReport convertToApplicationAttemptReport(
@@ -449,7 +476,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           if (eventInfo
               .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)) {
             amContainerId =
-                ConverterUtils.toContainerId(eventInfo.get(
+                ContainerId.fromString(eventInfo.get(
                     AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)
                     .toString());
           }
@@ -491,7 +518,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           if (eventInfo
               .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)) {
             amContainerId =
-                ConverterUtils.toContainerId(eventInfo.get(
+                ContainerId.fromString(eventInfo.get(
                     AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)
                     .toString());
           }
@@ -499,7 +526,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
       }
     }
     return ApplicationAttemptReport.newInstance(
-        ConverterUtils.toApplicationAttemptId(entity.getEntityId()),
+        ApplicationAttemptId.fromString(entity.getEntityId()),
         host, rpcPort, trackingUrl, originalTrackingUrl, diagnosticsInfo,
         state, amContainerId);
   }
@@ -587,19 +614,22 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
         }
       }
     }
-    NodeId allocatedNode = NodeId.newInstance(allocatedHost, allocatedPort);
     ContainerId containerId =
-        ConverterUtils.toContainerId(entity.getEntityId());
-    String logUrl = WebAppUtils.getAggregatedLogURL(
-        serverHttpAddress,
-        allocatedNode.toString(),
-        containerId.toString(),
-        containerId.toString(),
-        user);
+        ContainerId.fromString(entity.getEntityId());
+    String logUrl = null;
+    NodeId allocatedNode = null;
+    if (allocatedHost != null) {
+      allocatedNode = NodeId.newInstance(allocatedHost, allocatedPort);
+      logUrl = WebAppUtils.getAggregatedLogURL(
+          serverHttpAddress,
+          allocatedNode.toString(),
+          containerId.toString(),
+          containerId.toString(),
+          user);
+    }
     return ContainerReport.newInstance(
-        ConverterUtils.toContainerId(entity.getEntityId()),
-        Resource.newInstance(allocatedMem, allocatedVcore),
-        NodeId.newInstance(allocatedHost, allocatedPort),
+        ContainerId.fromString(entity.getEntityId()),
+        Resource.newInstance(allocatedMem, allocatedVcore), allocatedNode,
         Priority.newInstance(allocatedPriority),
         createdTime, finishedTime, diagnosticsInfo, logUrl, exitStatus, state,
         nodeHttpAddress);

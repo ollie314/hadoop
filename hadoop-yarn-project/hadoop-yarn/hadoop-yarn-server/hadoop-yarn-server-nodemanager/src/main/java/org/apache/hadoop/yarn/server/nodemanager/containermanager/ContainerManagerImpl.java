@@ -61,11 +61,13 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainersRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainersResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.StopContainersRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StopContainersResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SignalContainerResponsePBImpl;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
@@ -147,6 +149,7 @@ import org.apache.hadoop.yarn.server.utils.YarnServerSecurityUtils;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.ByteString;
+
 import org.apache.hadoop.yarn.util.resource.Resources;
 
 public class ContainerManagerImpl extends CompositeService implements
@@ -292,12 +295,6 @@ public class ContainerManagerImpl extends CompositeService implements
       for (RecoveredContainerState rcs : stateStore.loadContainersState()) {
         recoverContainer(rcs);
       }
-
-      String diagnostic = "Application marked finished during recovery";
-      for (ApplicationId appId : appsState.getFinishedApplications()) {
-        dispatcher.getEventHandler().handle(
-            new ApplicationFinishEvent(appId, diagnostic));
-      }
     }
   }
 
@@ -348,8 +345,7 @@ public class ContainerManagerImpl extends CompositeService implements
           YarnServerSecurityUtils.parseCredentials(launchContext);
       Container container = new ContainerImpl(getConfig(), dispatcher,
           req.getContainerLaunchContext(),
-          credentials, metrics, token, rcs.getStatus(), rcs.getExitCode(),
-          rcs.getDiagnostics(), rcs.getKilled(), rcs.getCapability(), context);
+          credentials, metrics, token, context, rcs);
       context.getContainers().put(containerId, container);
       dispatcher.getEventHandler().handle(
           new ApplicationContainerInitEvent(container));
@@ -940,7 +936,8 @@ public class ContainerManagerImpl extends CompositeService implements
               logAggregationContext));
         }
 
-        this.context.getNMStateStore().storeContainer(containerId, request);
+        this.context.getNMStateStore().storeContainer(containerId,
+            containerTokenIdentifier.getVersion(), request);
         dispatcher.getEventHandler().handle(
           new ApplicationContainerInitEvent(container));
 
@@ -1024,7 +1021,8 @@ public class ContainerManagerImpl extends CompositeService implements
           // an updated NMToken.
           updateNMTokenIdentifier(nmTokenIdentifier);
           Resource resource = containerTokenIdentifier.getResource();
-          changeContainerResourceInternal(containerId, resource, true);
+          changeContainerResourceInternal(containerId,
+              containerTokenIdentifier.getVersion(), resource, true);
           successfullyIncreasedContainers.add(containerId);
         } catch (YarnException | InvalidToken e) {
           failedContainers.put(containerId, SerializedException.newInstance(e));
@@ -1038,8 +1036,8 @@ public class ContainerManagerImpl extends CompositeService implements
   }
 
   @SuppressWarnings("unchecked")
-  private void changeContainerResourceInternal(
-      ContainerId containerId, Resource targetResource, boolean increase)
+  private void changeContainerResourceInternal(ContainerId containerId,
+      int containerVersion, Resource targetResource, boolean increase)
           throws YarnException, IOException {
     Container container = context.getContainers().get(containerId);
     // Check container existence
@@ -1106,7 +1104,7 @@ public class ContainerManagerImpl extends CompositeService implements
       if (!serviceStopped) {
         // Persist container resource change for recovery
         this.context.getNMStateStore().storeContainerResourceChanged(
-            containerId, targetResource);
+            containerId, containerVersion, targetResource);
         getContainersMonitor().handle(
             new ChangeMonitoringContainerResourceEvent(
                 containerId, targetResource));
@@ -1318,11 +1316,6 @@ public class ContainerManagerImpl extends CompositeService implements
         } else if (appsFinishedEvent.getReason() == CMgrCompletedAppsEvent.Reason.BY_RESOURCEMANAGER) {
           diagnostic = "Application killed by ResourceManager";
         }
-        try {
-          this.context.getNMStateStore().storeFinishedApplication(appID);
-        } catch (IOException e) {
-          LOG.error("Unable to update application state in store", e);
-        }
         this.dispatcher.getEventHandler().handle(
             new ApplicationFinishEvent(appID,
                 diagnostic));
@@ -1346,7 +1339,7 @@ public class ContainerManagerImpl extends CompositeService implements
           : containersDecreasedEvent.getContainersToDecrease()) {
         try {
           changeContainerResourceInternal(container.getId(),
-              container.getResource(), false);
+              container.getVersion(), container.getResource(), false);
         } catch (YarnException e) {
           LOG.error("Unable to decrease container resource", e);
         } catch (IOException e) {
@@ -1359,16 +1352,7 @@ public class ContainerManagerImpl extends CompositeService implements
           (CMgrSignalContainersEvent) event;
       for (SignalContainerRequest request : containersSignalEvent
           .getContainersToSignal()) {
-        ContainerId containerId = request.getContainerId();
-        Container container = this.context.getContainers().get(containerId);
-        if (container != null) {
-          LOG.info(containerId + " signal request by ResourceManager.");
-          this.dispatcher.getEventHandler().handle(
-              new SignalContainersLauncherEvent(container,
-                  request.getCommand()));
-        } else {
-          LOG.info("Container " + containerId + " no longer exists");
-        }
+        internalSignalToContainer(request, "ResourceManager");
       }
       break;
     default:
@@ -1410,4 +1394,27 @@ public class ContainerManagerImpl extends CompositeService implements
     this.amrmProxyService = amrmProxyService;
   }
 
+  @SuppressWarnings("unchecked")
+  @Override
+  public SignalContainerResponse signalToContainer(
+      SignalContainerRequest request) throws YarnException, IOException {
+    internalSignalToContainer(request, "Application Master");
+    return new SignalContainerResponsePBImpl();
+  }
+
+  @SuppressWarnings("unchecked")
+  private void internalSignalToContainer(SignalContainerRequest request,
+      String sentBy) {
+    ContainerId containerId = request.getContainerId();
+    Container container = this.context.getContainers().get(containerId);
+    if (container != null) {
+      LOG.info(containerId + " signal request " + request.getCommand()
+            + " by " + sentBy);
+      this.dispatcher.getEventHandler().handle(
+          new SignalContainersLauncherEvent(container,
+              request.getCommand()));
+    } else {
+      LOG.info("Container " + containerId + " no longer exists");
+    }
+  }
 }

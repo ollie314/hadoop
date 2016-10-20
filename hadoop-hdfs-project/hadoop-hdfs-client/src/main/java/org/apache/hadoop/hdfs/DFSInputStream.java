@@ -59,6 +59,7 @@ import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.HasEnhancedByteBufferAccess;
 import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderFactory;
 import org.apache.hadoop.hdfs.client.impl.DfsClientConf;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -973,6 +974,10 @@ public class DFSInputStream extends FSInputStream
   @Override
   public synchronized int read(@Nonnull final byte buf[], int off, int len)
       throws IOException {
+    validatePositionedReadArgs(pos, buf, off, len);
+    if (len == 0) {
+      return 0;
+    }
     ReaderStrategy byteArrayReader = new ByteArrayStrategy(buf);
     try (TraceScope ignored =
              dfsClient.newPathTraceScope("DFSInputStream#byteArrayRead", src)) {
@@ -1438,9 +1443,11 @@ public class DFSInputStream extends FSInputStream
      * access key from its memory since it's considered expired based on
      * the estimated expiration date.
      */
-    if (ex instanceof InvalidBlockTokenException || ex instanceof InvalidToken) {
-      DFSClient.LOG.info("Access token was invalid when connecting to "
-          + targetAddr + " : " + ex);
+    if (ex instanceof InvalidBlockTokenException ||
+        ex instanceof InvalidToken) {
+      DFSClient.LOG.debug(
+          "Access token was invalid when connecting to {}: {}",
+          targetAddr, ex);
       return true;
     }
     return false;
@@ -1459,6 +1466,10 @@ public class DFSInputStream extends FSInputStream
   @Override
   public int read(long position, byte[] buffer, int offset, int length)
       throws IOException {
+    validatePositionedReadArgs(position, buffer, offset, length);
+    if (length == 0) {
+      return 0;
+    }
     try (TraceScope ignored = dfsClient.
         newPathTraceScope("DFSInputStream#byteArrayPread", src)) {
       return pread(position, buffer, offset, length);

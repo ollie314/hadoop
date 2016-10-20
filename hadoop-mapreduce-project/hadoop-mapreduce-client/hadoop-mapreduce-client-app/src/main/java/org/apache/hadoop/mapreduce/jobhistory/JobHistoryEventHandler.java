@@ -50,6 +50,7 @@ import org.apache.hadoop.mapreduce.JobCounter;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.TypeConverter;
+import org.apache.hadoop.mapreduce.util.MRJobConfUtil;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.JobState;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
@@ -77,6 +78,8 @@ import org.codehaus.jackson.node.JsonNodeFactory;
 import org.codehaus.jackson.node.ObjectNode;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.sun.jersey.api.client.ClientHandlerException;
+
 /**
  * The job history events get routed to this class. This class writes the Job
  * history events to the DFS directly into a staging dir and then moved to a
@@ -490,16 +493,16 @@ public class JobHistoryEventHandler extends AbstractService
       if (conf != null) {
         // TODO Ideally this should be written out to the job dir
         // (.staging/jobid/files - RecoveryService will need to be patched)
-        FSDataOutputStream jobFileOut = null;
-        try {
-          if (logDirConfPath != null) {
-            jobFileOut = stagingDirFS.create(logDirConfPath, true);
-            conf.writeXml(jobFileOut);
-            jobFileOut.close();
+        if (logDirConfPath != null) {
+          Configuration redactedConf = new Configuration(conf);
+          MRJobConfUtil.redact(redactedConf);
+          try (FSDataOutputStream jobFileOut = stagingDirFS
+              .create(logDirConfPath, true)) {
+            redactedConf.writeXml(jobFileOut);
+          } catch (IOException e) {
+            LOG.info("Failed to write the job configuration file", e);
+            throw e;
           }
-        } catch (IOException e) {
-          LOG.info("Failed to write the job configuration file", e);
-          throw e;
         }
       }
     }
@@ -687,9 +690,9 @@ public class JobHistoryEventHandler extends AbstractService
       NormalizedResourceEvent normalizedResourceEvent = 
             (NormalizedResourceEvent) event;
       if (normalizedResourceEvent.getTaskType() == TaskType.MAP) {
-        summary.setResourcesPerMap(normalizedResourceEvent.getMemory());
+        summary.setResourcesPerMap((int) normalizedResourceEvent.getMemory());
       } else if (normalizedResourceEvent.getTaskType() == TaskType.REDUCE) {
-        summary.setResourcesPerReduce(normalizedResourceEvent.getMemory());
+        summary.setResourcesPerReduce((int) normalizedResourceEvent.getMemory());
       }
       break;  
     case JOB_INITED:
@@ -1033,12 +1036,9 @@ public class JobHistoryEventHandler extends AbstractService
                   + error.getErrorCode());
         }
       }
-    } catch (IOException ex) {
+    } catch (YarnException | IOException | ClientHandlerException ex) {
       LOG.error("Error putting entity " + tEntity.getEntityId() + " to Timeline"
-      + "Server", ex);
-    } catch (YarnException ex) {
-      LOG.error("Error putting entity " + tEntity.getEntityId() + " to Timeline"
-      + "Server", ex);
+          + "Server", ex);
     }
   }
 

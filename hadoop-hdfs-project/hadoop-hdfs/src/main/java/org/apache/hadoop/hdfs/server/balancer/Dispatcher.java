@@ -350,7 +350,7 @@ public class Dispatcher {
         target.getDDatanode().setHasSuccess();
         LOG.info("Successfully moved " + this);
       } catch (IOException e) {
-        LOG.warn("Failed to move " + this + ": " + e.getMessage());
+        LOG.warn("Failed to move " + this, e);
         target.getDDatanode().setHasFailure();
         // Proxy or target may have some issues, delay before using these nodes
         // further in order to avoid a potential storm of "threads quota
@@ -734,7 +734,7 @@ public class Dispatcher {
             long blockSize = pendingBlock.block.getNumBytes();
             incScheduledSize(-blockSize);
             task.size -= blockSize;
-            if (task.size == 0) {
+            if (task.size <= 0) {
               i.remove();
             }
             return pendingBlock;
@@ -788,6 +788,13 @@ public class Dispatcher {
               + ", scheduledSize=" + getScheduledSize()
               + ", srcBlocks#=" + srcBlocks.size());
         }
+        // check if time is up or not
+        if (Time.monotonicNow() - startTime > MAX_ITERATION_TIME) {
+          LOG.info("Time up (max time=" + MAX_ITERATION_TIME/1000
+              + " seconds).  Skipping " + this);
+          isTimeUp = true;
+          continue;
+        }
         final PendingMove p = chooseNextMove();
         if (p != null) {
           // Reset no pending move counter
@@ -823,14 +830,6 @@ public class Dispatcher {
                 + " times.  Skipping " + this);
             resetScheduledSize();
           }
-        }
-
-        // check if time is up or not
-        if (Time.monotonicNow() - startTime > MAX_ITERATION_TIME) {
-          LOG.info("Time up (max time=" + MAX_ITERATION_TIME/1000
-              + " seconds).  Skipping " + this);
-          isTimeUp = true;
-          continue;
         }
 
         // Now we can not schedule any block to move and there are

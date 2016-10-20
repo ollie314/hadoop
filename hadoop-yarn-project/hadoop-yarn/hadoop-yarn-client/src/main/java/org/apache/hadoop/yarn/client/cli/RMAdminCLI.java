@@ -98,11 +98,17 @@ public class RMAdminCLI extends HAAdmin {
               "Reload the queues' acls, states and scheduler specific " +
                   "properties. \n\t\tResourceManager will reload the " +
                   "mapred-queues configuration file."))
-          .put("-refreshNodes", new UsageInfo("[-g [timeout in seconds]]",
+          .put("-refreshNodes",
+              new UsageInfo("[-g [timeout in seconds] -client|server]",
               "Refresh the hosts information at the ResourceManager. Here "
-              + "[-g [timeout in seconds] is optional, if we specify the "
-              + "timeout then ResourceManager will wait for timeout before "
-              + "marking the NodeManager as decommissioned."))
+              + "[-g [timeout in seconds] -client|server] is optional, if we "
+              + "specify the timeout then ResourceManager will wait for "
+              + "timeout before marking the NodeManager as decommissioned."
+              + " The -client|server indicates if the timeout tracking should"
+              + " be handled by the client or the ResourceManager. The client"
+              + "-side tracking is blocking, while the server-side tracking"
+              + " is not. Omitting the timeout, or a timeout of -1, indicates"
+              + " an infinite timeout."))
           .put("-refreshNodesResources", new UsageInfo("",
               "Refresh resources of NodeManagers at the ResourceManager."))
           .put("-refreshSuperUserGroupsConfiguration", new UsageInfo("",
@@ -124,11 +130,13 @@ public class RMAdminCLI extends HAAdmin {
               new UsageInfo("<label1,label2,label3> (label splitted by \",\")",
                   "remove from cluster node labels"))
           .put("-replaceLabelsOnNode",
-              new UsageInfo(
+              new UsageInfo("[-failOnUnknownNodes] " +
                   "<\"node1[:port]=label1,label2 node2[:port]=label1,label2\">",
-                  "replace labels on nodes"
-                      + " (please note that we do not support specifying multiple"
-                      + " labels on a single host for now.)"))
+              "replace labels on nodes"
+                  + " (please note that we do not support specifying multiple"
+                  + " labels on a single host for now.)\n\t\t"
+                  + "[-failOnUnknownNodes] is optional, when we set this"
+                  + " option, it will fail if specified nodes are unknown."))
           .put("-directlyAccessNodeLabelStore",
               new UsageInfo("", "This is DEPRECATED, will be removed in future releases. Directly access node label store, "
                   + "with this option, all node label related operations"
@@ -230,7 +238,7 @@ public class RMAdminCLI extends HAAdmin {
     summary.append("The full syntax is: \n\n" +
     "yarn rmadmin" +
       " [-refreshQueues]" +
-      " [-refreshNodes [-g [timeout in seconds]]]" +
+      " [-refreshNodes [-g [timeout in seconds] -client|server]]" +
       " [-refreshNodesResources]" +
       " [-refreshSuperUserGroupsConfiguration]" +
       " [-refreshUserToGroupsMappings]" +
@@ -240,8 +248,10 @@ public class RMAdminCLI extends HAAdmin {
       " [-addToClusterNodeLabels <\"label1(exclusive=true),"
                   + "label2(exclusive=false),label3\">]" +
       " [-removeFromClusterNodeLabels <label1,label2,label3>]" +
-      " [-replaceLabelsOnNode <\"node1[:port]=label1,label2 node2[:port]=label1\">]" +
+      " [-replaceLabelsOnNode [-failOnUnknownNodes] "
+          + "<\"node1[:port]=label1,label2 node2[:port]=label1\">]" +
       " [-directlyAccessNodeLabelStore]" +
+      " [-refreshClusterMaxPriority]" +
       " [-updateNodeResource [NodeID] [MemSize] [vCores] ([OvercommitTimeout])");
     if (isHAEnabled) {
       appendHAUsage(summary);
@@ -293,7 +303,7 @@ public class RMAdminCLI extends HAAdmin {
     return ClientRMProxy.createRMProxy(conf,
         ResourceManagerAdministrationProtocol.class);
   }
-  
+
   private int refreshQueues() throws IOException, YarnException {
     // Refresh the queue properties
     ResourceManagerAdministrationProtocol adminProtocol = createAdminProtocol();
@@ -312,7 +322,12 @@ public class RMAdminCLI extends HAAdmin {
     return 0;
   }
 
-  private int refreshNodes(long timeout) throws IOException, YarnException {
+  private int refreshNodes(long timeout, String trackingMode)
+      throws IOException, YarnException {
+    if (!"client".equals(trackingMode)) {
+      throw new UnsupportedOperationException(
+          "Only client tracking mode is currently supported.");
+    }
     // Graceful decommissioning with timeout
     ResourceManagerAdministrationProtocol adminProtocol = createAdminProtocol();
     RefreshNodesRequest gracefulRequest = RefreshNodesRequest
@@ -427,7 +442,7 @@ public class RMAdminCLI extends HAAdmin {
     ResourceManagerAdministrationProtocol adminProtocol = createAdminProtocol();
     UpdateNodeResourceRequest request =
       recordFactory.newRecordInstance(UpdateNodeResourceRequest.class);
-    NodeId nodeId = ConverterUtils.toNodeId(nodeIdStr);
+    NodeId nodeId = NodeId.fromString(nodeIdStr);
     
     Resource resource = Resources.createResource(memSize, cores);
     Map<NodeId, ResourceOption> resourceMap =
@@ -632,14 +647,14 @@ public class RMAdminCLI extends HAAdmin {
     return map;
   }
 
-  private int replaceLabelsOnNodes(String args) throws IOException,
-      YarnException {
+  private int replaceLabelsOnNodes(String args, boolean failOnUnknownNodes)
+      throws IOException, YarnException {
     Map<NodeId, Set<String>> map = buildNodeLabelsMapFromStr(args);
-    return replaceLabelsOnNodes(map);
+    return replaceLabelsOnNodes(map, failOnUnknownNodes);
   }
 
-  private int replaceLabelsOnNodes(Map<NodeId, Set<String>> map)
-      throws IOException, YarnException {
+  private int replaceLabelsOnNodes(Map<NodeId, Set<String>> map,
+      boolean failOnUnknownNodes) throws IOException, YarnException {
     if (directlyAccessNodeLabelStore) {
       getNodeLabelManagerInstance(getConf()).replaceLabelsOnNode(map);
     } else {
@@ -647,11 +662,12 @@ public class RMAdminCLI extends HAAdmin {
           createAdminProtocol();
       ReplaceLabelsOnNodeRequest request =
           ReplaceLabelsOnNodeRequest.newInstance(map);
+      request.setFailOnUnknownNodes(failOnUnknownNodes);
       adminProtocol.replaceLabelsOnNode(request);
     }
     return 0;
   }
-  
+
   @Override
   public int run(String[] args) throws Exception {
     // -directlyAccessNodeLabelStore is a additional option for node label
@@ -721,11 +737,18 @@ public class RMAdminCLI extends HAAdmin {
       } else if ("-refreshNodes".equals(cmd)) {
         if (args.length == 1) {
           exitCode = refreshNodes();
-        } else if (args.length == 3) {
+        } else if (args.length == 3 || args.length == 4) {
           // if the graceful timeout specified
           if ("-g".equals(args[1])) {
-            long timeout = validateTimeout(args[2]);
-            exitCode = refreshNodes(timeout);
+            long timeout = -1;
+            String trackingMode;
+            if (args.length == 4) {
+              timeout = validateTimeout(args[2]);
+              trackingMode = validateTrackingMode(args[3]);
+            } else {
+              trackingMode = validateTrackingMode(args[2]);
+            }
+            exitCode = refreshNodes(timeout, trackingMode);
           } else {
             printUsage(cmd, isHAEnabled);
             return -1;
@@ -787,8 +810,16 @@ public class RMAdminCLI extends HAAdmin {
           System.err.println(NO_MAPPING_ERR_MSG);
           printUsage("", isHAEnabled);
           exitCode = -1;
+        } else if ("-failOnUnknownNodes".equals(args[i])) {
+          if (i + 1 >= args.length) {
+            System.err.println(NO_MAPPING_ERR_MSG);
+            printUsage("", isHAEnabled);
+            exitCode = -1;
+          } else {
+            exitCode = replaceLabelsOnNodes(args[i + 1], true);
+          }
         } else {
-          exitCode = replaceLabelsOnNodes(args[i]);
+          exitCode = replaceLabelsOnNodes(args[i], false);
         }
       } else {
         exitCode = -1;
@@ -836,6 +867,16 @@ public class RMAdminCLI extends HAAdmin {
       throw new IllegalArgumentException(INVALID_TIMEOUT_ERR_MSG + timeout);
     }
     return timeout;
+  }
+
+  private String validateTrackingMode(String mode) {
+    if ("-client".equals(mode)) {
+      return "client";
+    }
+    if ("-server".equals(mode)) {
+      return "server";
+    }
+    throw new IllegalArgumentException("Invalid mode specified: " + mode);
   }
 
   @Override

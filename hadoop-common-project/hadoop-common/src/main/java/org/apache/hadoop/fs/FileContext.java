@@ -238,7 +238,7 @@ public class FileContext {
   private FileContext(final AbstractFileSystem defFs,
     final FsPermission theUmask, final Configuration aConf) {
     defaultFS = defFs;
-    umask = FsPermission.getUMask(aConf);
+    umask = theUmask;
     conf = aConf;
     tracer = FsTracer.get(aConf);
     try {
@@ -315,7 +315,7 @@ public class FileContext {
    * 
    * @throws UnsupportedFileSystemException If the file system for
    *           <code>absOrFqPath</code> is not supported.
-   * @throws IOExcepton If the file system for <code>absOrFqPath</code> could
+   * @throws IOException If the file system for <code>absOrFqPath</code> could
    *         not be instantiated.
    */
   protected AbstractFileSystem getFSofPath(final Path absOrFqPath)
@@ -2706,9 +2706,26 @@ public class FileContext {
   }
 
   /**
+   * Unset the storage policy set for a given file or directory.
+   * @param src file or directory path.
+   * @throws IOException
+   */
+  public void unsetStoragePolicy(final Path src) throws IOException {
+    final Path absF = fixRelativePart(src);
+    new FSLinkResolver<Void>() {
+      @Override
+      public Void next(final AbstractFileSystem fs, final Path p)
+          throws IOException {
+        fs.unsetStoragePolicy(src);
+        return null;
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
    * Query the effective storage policy ID for the given file or directory.
    *
-   * @param src file or directory path.
+   * @param path file or directory path.
    * @return storage policy for give file.
    * @throws IOException
    */

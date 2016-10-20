@@ -18,8 +18,6 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
-import com.google.common.base.Optional;
-
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
 
@@ -38,14 +36,15 @@ import java.util.Map;
 import org.apache.commons.lang.math.RandomUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.Shell;
-import org.apache.hadoop.util.Shell.ExitCodeException;
 import org.apache.hadoop.util.Shell.CommandExecutor;
+import org.apache.hadoop.util.Shell.ExitCodeException;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -64,6 +63,7 @@ import org.apache.hadoop.yarn.server.nodemanager.executor.LocalizerStartContext;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Optional;
 
 public class DefaultContainerExecutor extends ContainerExecutor {
 
@@ -132,11 +132,23 @@ public class DefaultContainerExecutor extends ContainerExecutor {
     localizerFc.setWorkingDirectory(appStorageDir);
     LOG.info("Localizer CWD set to " + appStorageDir + " = " 
         + localizerFc.getWorkingDirectory());
+
     ContainerLocalizer localizer =
-        new ContainerLocalizer(localizerFc, user, appId, locId, 
-            getPaths(localDirs), RecordFactoryProvider.getRecordFactory(getConf()));
+        createContainerLocalizer(user, appId, locId, localDirs, localizerFc);
     // TODO: DO it over RPC for maintaining similarity?
     localizer.runLocalization(nmAddr);
+  }
+
+  @Private
+  @VisibleForTesting
+  protected ContainerLocalizer createContainerLocalizer(String user,
+      String appId, String locId, List<String> localDirs,
+      FileContext localizerFc) throws IOException {
+    ContainerLocalizer localizer =
+        new ContainerLocalizer(localizerFc, user, appId, locId,
+            getPaths(localDirs),
+            RecordFactoryProvider.getRecordFactory(getConf()));
+    return localizer;
   }
 
   @Override
@@ -153,11 +165,10 @@ public class DefaultContainerExecutor extends ContainerExecutor {
     ContainerId containerId = container.getContainerId();
 
     // create container dirs on all disks
-    String containerIdStr = ConverterUtils.toString(containerId);
+    String containerIdStr = containerId.toString();
     String appIdStr =
-        ConverterUtils.toString(
             containerId.getApplicationAttemptId().
-                getApplicationId());
+                getApplicationId().toString();
     for (String sLocalDir : localDirs) {
       Path usersdir = new Path(sLocalDir, ContainerLocalizer.USERCACHE);
       Path userdir = new Path(usersdir, user);
@@ -282,7 +293,9 @@ public class DefaultContainerExecutor extends ContainerExecutor {
       return new ShellCommandExecutor(
           command,
           wordDir,
-          environment); 
+          environment,
+          0L,
+          false);
   }
 
   protected LocalWrapperScriptBuilder getLocalWrapperScriptBuilder(

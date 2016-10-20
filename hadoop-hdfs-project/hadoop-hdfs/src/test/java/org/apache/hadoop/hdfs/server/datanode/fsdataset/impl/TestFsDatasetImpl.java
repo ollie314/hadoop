@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
+import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 
 import org.apache.commons.io.FileUtils;
@@ -34,6 +35,7 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
@@ -91,6 +93,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -489,47 +492,98 @@ public class TestFsDatasetImpl {
     // Will write and remove on dn0.
     final ExtendedBlock eb = new ExtendedBlock(BLOCK_POOL_IDS[0], 0);
     final CountDownLatch startFinalizeLatch = new CountDownLatch(1);
-    final CountDownLatch brReceivedLatch = new CountDownLatch(1);
+    final CountDownLatch blockReportReceivedLatch = new CountDownLatch(1);
+    final CountDownLatch volRemoveStartedLatch = new CountDownLatch(1);
+    final CountDownLatch volRemoveCompletedLatch = new CountDownLatch(1);
     class BlockReportThread extends Thread {
       public void run() {
+        // Lets wait for the volume remove process to start
+        try {
+          volRemoveStartedLatch.await();
+        } catch (Exception e) {
+          LOG.info("Unexpected exception when waiting for vol removal:", e);
+        }
         LOG.info("Getting block report");
         dataset.getBlockReports(eb.getBlockPoolId());
         LOG.info("Successfully received block report");
-        brReceivedLatch.countDown();
+        blockReportReceivedLatch.countDown();
       }
     }
 
-    final BlockReportThread brt = new BlockReportThread();
     class ResponderThread extends Thread {
       public void run() {
         try (ReplicaHandler replica = dataset
-            .createRbw(StorageType.DEFAULT, eb, false)) {
-          LOG.info("createRbw finished");
+                .createRbw(StorageType.DEFAULT, eb, false)) {
+          LOG.info("CreateRbw finished");
           startFinalizeLatch.countDown();
 
-          // Slow down while we're holding the reference to the volume
-          Thread.sleep(1000);
+          // Slow down while we're holding the reference to the volume.
+          // As we finalize a block, the volume is removed in parallel.
+          // Ignore any interrupts coming out of volume shutdown.
+          try {
+            Thread.sleep(1000);
+          } catch (InterruptedException ie) {
+            LOG.info("Ignoring ", ie);
+          }
+
+          // Lets wait for the other thread finish getting block report
+          blockReportReceivedLatch.await();
+
           dataset.finalizeBlock(eb);
-          LOG.info("finalizeBlock finished");
+          LOG.info("FinalizeBlock finished");
         } catch (Exception e) {
           LOG.warn("Exception caught. This should not affect the test", e);
         }
       }
     }
 
-    ResponderThread res = new ResponderThread();
-    res.start();
+    class VolRemoveThread extends Thread {
+      public void run() {
+        Set<File> volumesToRemove = new HashSet<>();
+        try {
+          volumesToRemove.add(StorageLocation.parse(
+                  dataset.getVolume(eb).getBasePath()).getFile());
+        } catch (Exception e) {
+          LOG.info("Problem preparing volumes to remove: " + e);
+          Assert.fail("Exception in remove volume thread, check log for " +
+                  "details.");
+        }
+        LOG.info("Removing volume " + volumesToRemove);
+        dataset.removeVolumes(volumesToRemove, true);
+        volRemoveCompletedLatch.countDown();
+        LOG.info("Removed volume " + volumesToRemove);
+      }
+    }
+
+    // Start the volume write operation
+    ResponderThread responderThread = new ResponderThread();
+    responderThread.start();
     startFinalizeLatch.await();
 
-    Set<File> volumesToRemove = new HashSet<>();
-    volumesToRemove.add(
-        StorageLocation.parse(dataset.getVolume(eb).getBasePath()).getFile());
-    LOG.info("Removing volume " + volumesToRemove);
-    // Verify block report can be received during this
-    brt.start();
-    dataset.removeVolumes(volumesToRemove, true);
-    LOG.info("Volumes removed");
-    brReceivedLatch.await();
+    // Start the block report get operation
+    final BlockReportThread blockReportThread = new BlockReportThread();
+    blockReportThread.start();
+
+    // Start the volume remove operation
+    VolRemoveThread volRemoveThread = new VolRemoveThread();
+    volRemoveThread.start();
+
+    // Let volume write and remove operation be
+    // blocked for few seconds
+    Thread.sleep(2000);
+
+    // Signal block report receiver and volume writer
+    // thread to complete their operations so that vol
+    // remove can proceed
+    volRemoveStartedLatch.countDown();
+
+    // Verify if block report can be received
+    // when volume is in use and also being removed
+    blockReportReceivedLatch.await();
+
+    // Verify if volume can be removed safely when there
+    // are read/write operation in-progress
+    volRemoveCompletedLatch.await();
   }
 
   /**
@@ -556,8 +610,8 @@ public class TestFsDatasetImpl {
       out.hflush();
 
       ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, filePath);
-      FsVolumeImpl volume = (FsVolumeImpl) dataNode.getFSDataset().getVolume(
-          block);
+      final FsVolumeImpl volume = (FsVolumeImpl) dataNode.getFSDataset().
+          getVolume(block);
       File finalizedDir = volume.getFinalizedDir(cluster.getNamesystem()
           .getBlockPoolId());
 
@@ -572,9 +626,11 @@ public class TestFsDatasetImpl {
       // Invoke the synchronous checkDiskError method
       dataNode.getFSDataset().checkDataDir();
       // Sleep for 1 second so that datanode can interrupt and cluster clean up
-      Thread.sleep(1000);
-      assertEquals("There are active threads still referencing volume: "
-          + volume.getBasePath(), 0, volume.getReferenceCount());
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override public Boolean get() {
+              return volume.getReferenceCount() == 0;
+            }
+          }, 100, 10);
       LocatedBlock lb = DFSTestUtil.getAllBlocks(fs, filePath).get(0);
       DatanodeInfo info = lb.getLocations()[0];
 
@@ -583,12 +639,53 @@ public class TestFsDatasetImpl {
         Assert.fail("This is not a valid code path. "
             + "out.close should have thrown an exception.");
       } catch (IOException ioe) {
-        Assert.assertTrue(ioe.getMessage().contains(info.toString()));
+        GenericTestUtils.assertExceptionContains(info.getXferAddr(), ioe);
       }
       finalizedDir.setWritable(true);
       finalizedDir.setExecutable(true);
     } finally {
     cluster.shutdown();
+    }
+  }
+
+  @Test(timeout = 30000)
+  public void testReportBadBlocks() throws Exception {
+    boolean threwException = false;
+    MiniDFSCluster cluster = null;
+    try {
+      Configuration config = new HdfsConfiguration();
+      cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
+      cluster.waitActive();
+
+      Assert.assertEquals(0, cluster.getNamesystem().getCorruptReplicaBlocks());
+      DataNode dataNode = cluster.getDataNodes().get(0);
+      ExtendedBlock block =
+          new ExtendedBlock(cluster.getNamesystem().getBlockPoolId(), 0);
+      try {
+        // Test the reportBadBlocks when the volume is null
+        dataNode.reportBadBlocks(block);
+      } catch (NullPointerException npe) {
+        threwException = true;
+      }
+      Thread.sleep(3000);
+      Assert.assertFalse(threwException);
+      Assert.assertEquals(0, cluster.getNamesystem().getCorruptReplicaBlocks());
+
+      FileSystem fs = cluster.getFileSystem();
+      Path filePath = new Path("testData");
+      DFSTestUtil.createFile(fs, filePath, 1, (short) 1, 0);
+
+      block = DFSTestUtil.getFirstBlock(fs, filePath);
+      // Test for the overloaded method reportBadBlocks
+      dataNode.reportBadBlocks(block, dataNode.getFSDataset()
+          .getFsVolumeReferences().get(0));
+      Thread.sleep(3000);
+      BlockManagerTestUtil.updateState(cluster.getNamesystem()
+          .getBlockManager());
+      // Verify the bad block has been reported to namenode
+      Assert.assertEquals(1, cluster.getNamesystem().getCorruptReplicaBlocks());
+    } finally {
+      cluster.shutdown();
     }
   }
 }

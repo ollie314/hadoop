@@ -34,8 +34,6 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.EnumSet;
@@ -80,6 +78,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.util.Times;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -298,7 +297,6 @@ public class TestYarnCLI {
     reports.add(container);
     reports.add(container1);
     reports.add(container2);
-    DateFormat dateFormat=new SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy");
     when(client.getContainers(any(ApplicationAttemptId.class))).thenReturn(
         reports);
     sysOutStream.reset();
@@ -309,34 +307,17 @@ public class TestYarnCLI {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintWriter pw = new PrintWriter(baos);
     pw.println("Total number of containers :3");
-    pw.print("                  Container-Id");
-    pw.print("\t          Start Time");
-    pw.print("\t         Finish Time");
-    pw.print("\t               State");
-    pw.print("\t                Host");
-    pw.print("\t   Node Http Address");
-    pw.println("\t                            LOG-URL");
-    pw.print(" container_1234_0005_01_000001");
-    pw.print("\t"+dateFormat.format(new Date(time1)));
-    pw.print("\t"+dateFormat.format(new Date(time2)));
-    pw.print("\t            COMPLETE");
-    pw.print("\t           host:1234");
-    pw.print("\t    http://host:2345");
-    pw.println("\t                             logURL");
-    pw.print(" container_1234_0005_01_000002");
-    pw.print("\t"+dateFormat.format(new Date(time1)));
-    pw.print("\t"+dateFormat.format(new Date(time2)));
-    pw.print("\t            COMPLETE");
-    pw.print("\t           host:1234");
-    pw.print("\t    http://host:2345");
-    pw.println("\t                             logURL");
-    pw.print(" container_1234_0005_01_000003");
-    pw.print("\t"+dateFormat.format(new Date(time1)));
-    pw.print("\t                 N/A");
-    pw.print("\t             RUNNING");
-    pw.print("\t           host:1234");
-    pw.print("\t    http://host:2345");
-    pw.println("\t                                   ");
+    pw.printf(ApplicationCLI.CONTAINER_PATTERN, "Container-Id", "Start Time",
+        "Finish Time", "State", "Host", "Node Http Address", "LOG-URL");
+    pw.printf(ApplicationCLI.CONTAINER_PATTERN, "container_1234_0005_01_000001",
+        Times.format(time1), Times.format(time2),
+        "COMPLETE", "host:1234", "http://host:2345", "logURL");
+    pw.printf(ApplicationCLI.CONTAINER_PATTERN, "container_1234_0005_01_000002",
+        Times.format(time1), Times.format(time2),
+        "COMPLETE", "host:1234", "http://host:2345", "logURL");
+    pw.printf(ApplicationCLI.CONTAINER_PATTERN, "container_1234_0005_01_000003",
+        Times.format(time1), "N/A", "RUNNING", "host:1234",
+        "http://host:2345", "");
     pw.close();
     String appReportStr = baos.toString("UTF-8");
     Log.info("ExpectedOutput");
@@ -1067,7 +1048,7 @@ public class TestYarnCLI {
     NodeState[] states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    int result = cli.run(new String[] { "-list", "--states", "NEW" });
+    int result = cli.run(new String[] {"-list", "-states", "NEW"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -1088,7 +1069,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", "RUNNING" });
+    result = cli.run(new String[] {"-list", "-states", "RUNNING"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1106,13 +1087,13 @@ public class TestYarnCLI {
     verify(sysOut, times(2)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
-    result = cli.run(new String[] { "-list" });
+    result = cli.run(new String[] {"-list"});
     assertEquals(0, result);
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
     verify(sysOut, times(3)).write(any(byte[].class), anyInt(), anyInt());
 
     sysOutStream.reset();
-    result = cli.run(new String[] { "-list", "-showDetails" });
+    result = cli.run(new String[] {"-list", "-showDetails"});
     assertEquals(0, result);
     baos = new ByteArrayOutputStream();
     pw = new PrintWriter(baos);
@@ -1146,7 +1127,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", "UNHEALTHY" });
+    result = cli.run(new String[] {"-list", "-states", "UNHEALTHY"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1167,7 +1148,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", "DECOMMISSIONED" });
+    result = cli.run(new String[] {"-list", "-states", "DECOMMISSIONED"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1188,7 +1169,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", "REBOOTED" });
+    result = cli.run(new String[] {"-list", "-states", "REBOOTED"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1209,7 +1190,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", "LOST" });
+    result = cli.run(new String[] {"-list", "-states", "LOST"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1233,8 +1214,8 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--states", 
-                                        "NEW,RUNNING,LOST,REBOOTED" });
+    result = cli.run(new String[] {"-list", "-states",
+                                        "NEW,RUNNING,LOST,REBOOTED"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1265,7 +1246,7 @@ public class TestYarnCLI {
     states = nodeStates.toArray(new NodeState[0]);
     when(client.getNodeReports(states))
         .thenReturn(getNodeReports(nodeReports, nodeStates));
-    result = cli.run(new String[] { "-list", "--all" });
+    result = cli.run(new String[] {"-list", "-All"});
     assertEquals(0, result);
     verify(client).getNodeReports(states);
     baos = new ByteArrayOutputStream();
@@ -1291,6 +1272,10 @@ public class TestYarnCLI {
     nodesReportStr = baos.toString("UTF-8");
     Assert.assertEquals(nodesReportStr, sysOutStream.toString());
     verify(sysOut, times(10)).write(any(byte[].class), anyInt(), anyInt());
+
+    sysOutStream.reset();
+    result = cli.run(new String[] { "-list", "-states", "InvalidState"});
+    assertEquals(-1, result);
   }
 
   private List<NodeReport> getNodeReports(
@@ -1881,7 +1866,10 @@ public class TestYarnCLI {
     pw.println("                    details about each node.");
     pw.println(" -showDetails       Works with -list to show more details about each node.");
     pw.println(" -states <States>   Works with -list to filter nodes based on input");
-    pw.println("                    comma-separated list of node states.");
+    pw.println("                    comma-separated list of node states. The valid node");
+    pw.println("                    state can be one of the following:");
+    pw.println("                    NEW,RUNNING,UNHEALTHY,DECOMMISSIONED,LOST,REBOOTED,DEC");
+    pw.println("                    OMMISSIONING,SHUTDOWN.");
     pw.println(" -status <NodeId>   Prints the status report of the node.");
     pw.close();
     String nodesHelpStr = baos.toString("UTF-8");

@@ -442,8 +442,8 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
    */
   public synchronized Resource getHeadroom() {
     // Corner case to deal with applications being slightly over-limit
-    if (resourceLimit.getMemory() < 0) {
-      resourceLimit.setMemory(0);
+    if (resourceLimit.getMemorySize() < 0) {
+      resourceLimit.setMemorySize(0);
     }
     
     return resourceLimit;
@@ -478,7 +478,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
         if (requests != null) {
           LOG.debug("showRequests:" + " application=" + getApplicationId()
               + " headRoom=" + getHeadroom() + " currentConsumption="
-              + attemptResourceUsage.getUsed().getMemory());
+              + attemptResourceUsage.getUsed().getMemorySize());
           for (ResourceRequest request : requests.values()) {
             LOG.debug("showRequests:" + " application=" + getApplicationId()
                 + " request=" + request);
@@ -496,6 +496,9 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
       boolean newContainer, boolean increasedContainer) {
     Container container = rmContainer.getContainer();
     ContainerType containerType = ContainerType.TASK;
+    if (!newContainer) {
+      container.setVersion(container.getVersion() + 1);
+    }
     // The working knowledge is that masterContainer for AM is null as it
     // itself is the master container.
     if (isWaitingForAMContainer()) {
@@ -504,10 +507,11 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     try {
       // create container token and NMToken altogether.
       container.setContainerToken(rmContext.getContainerTokenSecretManager()
-          .createContainerToken(container.getId(), container.getNodeId(),
-              getUser(), container.getResource(), container.getPriority(),
-              rmContainer.getCreationTime(), this.logAggregationContext,
-              rmContainer.getNodeLabelExpression(), containerType));
+          .createContainerToken(container.getId(), container.getVersion(),
+              container.getNodeId(), getUser(), container.getResource(),
+              container.getPriority(), rmContainer.getCreationTime(),
+              this.logAggregationContext, rmContainer.getNodeLabelExpression(),
+              containerType));
       NMToken nmToken =
           rmContext.getNMTokenSecretManager().createAndGetNMToken(getUser(),
               getApplicationAttemptId(), container);
@@ -590,27 +594,26 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
     return (!unmanagedAM && appAttempt.getMasterContainer() == null);
   }
 
-  // Blacklist used for user containers
-  public synchronized void updateBlacklist(
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
+  public synchronized void updateBlacklist(List<String> blacklistAdditions,
+      List<String> blacklistRemovals) {
     if (!isStopped) {
-      this.appSchedulingInfo.updateBlacklist(
-          blacklistAdditions, blacklistRemovals);
+      if (isWaitingForAMContainer()) {
+        // The request is for the AM-container, and the AM-container is launched
+        // by the system. So, update the places that are blacklisted by system
+        // (as opposed to those blacklisted by the application).
+        this.appSchedulingInfo.updatePlacesBlacklistedBySystem(
+            blacklistAdditions, blacklistRemovals);
+      } else {
+        this.appSchedulingInfo.updatePlacesBlacklistedByApp(blacklistAdditions,
+            blacklistRemovals);
+      }
     }
   }
 
-  // Blacklist used for AM containers
-  public synchronized void updateAMBlacklist(
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
-    if (!isStopped) {
-      this.appSchedulingInfo.updateAMBlacklist(
-          blacklistAdditions, blacklistRemovals);
-    }
-  }
-
-  public boolean isBlacklisted(String resourceName) {
-    boolean useAMBlacklist = isWaitingForAMContainer();
-    return this.appSchedulingInfo.isBlacklisted(resourceName, useAMBlacklist);
+  public boolean isPlaceBlacklisted(String resourceName) {
+    boolean forAMContainer = isWaitingForAMContainer();
+    return this.appSchedulingInfo.isPlaceBlacklisted(resourceName,
+      forAMContainer);
   }
 
   public synchronized int addMissedNonPartitionedRequestSchedulingOpportunity(
@@ -680,7 +683,7 @@ public class SchedulerApplicationAttempt implements SchedulableEntity {
       for (RMContainer rmContainer : this.liveContainers.values()) {
         long usedMillis = currentTimeMillis - rmContainer.getCreationTime();
         Resource resource = rmContainer.getContainer().getResource();
-        memorySeconds += resource.getMemory() * usedMillis /  
+        memorySeconds += resource.getMemorySize() * usedMillis /
             DateUtils.MILLIS_PER_SECOND;
         vcoreSeconds += resource.getVirtualCores() * usedMillis  
             / DateUtils.MILLIS_PER_SECOND;

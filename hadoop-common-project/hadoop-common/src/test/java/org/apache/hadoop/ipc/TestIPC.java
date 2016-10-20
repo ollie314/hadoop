@@ -38,6 +38,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
@@ -47,6 +48,8 @@ import java.util.Random;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -73,6 +76,9 @@ import org.apache.hadoop.ipc.Server.Connection;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto;
 import org.apache.hadoop.net.ConnectTimeoutException;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
@@ -95,7 +101,7 @@ public class TestIPC {
     LogFactory.getLog(TestIPC.class);
   
   private static Configuration conf;
-  final static private int PING_INTERVAL = 1000;
+  final static int PING_INTERVAL = 1000;
   final static private int MIN_SLEEP_TIME = 1000;
   /**
    * Flag used to turn off the fault injection behavior
@@ -108,9 +114,11 @@ public class TestIPC {
   public void setupConf() {
     conf = new Configuration();
     Client.setPingInterval(conf, PING_INTERVAL);
+    // tests may enable security, so disable before each test
+    UserGroupInformation.setConfiguration(conf);
   }
 
-  private static final Random RANDOM = new Random();
+  static final Random RANDOM = new Random();
 
   private static final String ADDRESS = "0.0.0.0";
 
@@ -119,8 +127,8 @@ public class TestIPC {
 
   static ConnectionId getConnectionId(InetSocketAddress addr, int rpcTimeout,
       Configuration conf) throws IOException {
-    return ConnectionId.getConnectionId(addr, null, null, rpcTimeout, null,
-        conf);
+    return ConnectionId.getConnectionId(addr, null,
+        UserGroupInformation.getCurrentUser(), rpcTimeout, null, conf);
   }
 
   static Writable call(Client client, InetSocketAddress addr,
@@ -144,22 +152,33 @@ public class TestIPC {
         RPC.RPC_SERVICE_CLASS_DEFAULT, null);
   }
 
-  private static class TestServer extends Server {
+  static class TestServer extends Server {
     // Tests can set callListener to run a piece of code each time the server
     // receives a call.  This code executes on the server thread, so it has
     // visibility of that thread's thread-local storage.
-    private Runnable callListener;
+    Runnable callListener;
     private boolean sleep;
     private Class<? extends Writable> responseClass;
 
     public TestServer(int handlerCount, boolean sleep) throws IOException {
       this(handlerCount, sleep, LongWritable.class, null);
     }
-    
+
+    public TestServer(int handlerCount, boolean sleep, Configuration conf)
+        throws IOException {
+      this(handlerCount, sleep, LongWritable.class, null, conf);
+    }
+
     public TestServer(int handlerCount, boolean sleep,
         Class<? extends Writable> paramClass,
-        Class<? extends Writable> responseClass) 
-      throws IOException {
+        Class<? extends Writable> responseClass) throws IOException {
+      this(handlerCount, sleep, paramClass, responseClass, conf);
+    }
+
+    public TestServer(int handlerCount, boolean sleep,
+        Class<? extends Writable> paramClass,
+        Class<? extends Writable> responseClass, Configuration conf)
+        throws IOException {
       super(ADDRESS, 0, paramClass, handlerCount, conf);
       this.sleep = sleep;
       this.responseClass = responseClass;
@@ -1064,7 +1083,7 @@ public class TestIPC {
     assertRetriesOnSocketTimeouts(conf, 4);
   }
 
-  private static class CallInfo {
+  static class CallInfo {
     int id = RpcConstants.INVALID_CALL_ID;
     int retry = RpcConstants.INVALID_RETRY_COUNT;
   }
@@ -1119,7 +1138,7 @@ public class TestIPC {
   }
   
   /** A dummy protocol */
-  private interface DummyProtocol {
+  interface DummyProtocol {
     @Idempotent
     public void dummyRun() throws IOException;
   }
@@ -1155,7 +1174,7 @@ public class TestIPC {
       retryProxy.dummyRun();
       Assert.assertEquals(TestInvocationHandler.retry, totalRetry + 1);
     } finally {
-      Client.setCallIdAndRetryCount(0, 0);
+      Client.setCallIdAndRetryCount(0, 0, null);
       client.stop();
       server.stop();
     }
@@ -1188,7 +1207,7 @@ public class TestIPC {
     } finally {
       // Check if dummyRun called only once
       Assert.assertEquals(handler.invocations, 1);
-      Client.setCallIdAndRetryCount(0, 0);
+      Client.setCallIdAndRetryCount(0, 0, null);
       client.stop();
       server.stop();
     }
@@ -1233,7 +1252,7 @@ public class TestIPC {
     final int retryCount = 255;
     // Override client to store the call id
     final Client client = new Client(LongWritable.class, conf);
-    Client.setCallIdAndRetryCount(Client.nextCallId(), 255);
+    Client.setCallIdAndRetryCount(Client.nextCallId(), 255, null);
 
     // Attach a listener that tracks every call ID received by the server.
     final TestServer server = new TestServer(1, false);
@@ -1385,6 +1404,80 @@ public class TestIPC {
     client.stop();
   }
   
+  @Test(timeout=4000)
+  public void testInsecureVersionMismatch() throws IOException {
+    checkVersionMismatch();
+  }
+
+  @Test(timeout=4000)
+  public void testSecureVersionMismatch() throws IOException {
+    SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS, conf);
+    UserGroupInformation.setConfiguration(conf);
+    checkVersionMismatch();
+  }
+
+  private void checkVersionMismatch() throws IOException {
+    try (final ServerSocket listenSocket = new ServerSocket()) {
+      listenSocket.bind(null);
+      InetSocketAddress addr =
+          (InetSocketAddress) listenSocket.getLocalSocketAddress();
+
+      // open a socket that accepts a client and immediately returns
+      // a version mismatch exception.
+      ExecutorService executor = Executors.newSingleThreadExecutor();
+      executor.submit(new Runnable(){
+        @Override
+        public void run() {
+          try {
+            Socket socket = listenSocket.accept();
+            socket.getOutputStream().write(
+                NetworkTraces.RESPONSE_TO_HADOOP_0_20_3_RPC);
+            socket.close();
+          } catch (Throwable t) {
+            // ignore.
+          }
+        }
+      });
+
+      try {
+        Client client = new Client(LongWritable.class, conf);
+        call(client, 0, addr, conf);
+      } catch (RemoteException re) {
+        Assert.assertEquals(RPC.VersionMismatch.class.getName(),
+            re.getClassName());
+        Assert.assertEquals(NetworkTraces.HADOOP0_20_ERROR_MSG,
+            re.getMessage());
+        return;
+      }
+      Assert.fail("didn't get version mismatch");
+    }
+  }
+
+  @Test
+  public void testRpcResponseLimit() throws Throwable {
+    Server server = new TestServer(1, false);
+    InetSocketAddress addr = NetUtils.getConnectAddress(server);
+    server.start();
+
+    conf.setInt(CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH, 0);
+    Client client = new Client(LongWritable.class, conf);
+    call(client, 0, addr, conf);
+
+    conf.setInt(CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH, 4);
+    client = new Client(LongWritable.class, conf);
+    try {
+      call(client, 0, addr, conf);
+    } catch (IOException ioe) {
+      Throwable t = ioe.getCause();
+      Assert.assertNotNull(t);
+      Assert.assertEquals(RpcException.class, t.getClass());
+      Assert.assertEquals("RPC response exceeds maximum data length",
+          t.getMessage());
+      return;
+    }
+    Assert.fail("didn't get limit exceeded");
+  }
+
   private void doIpcVersionTest(
       byte[] requestData,
       byte[] expectedResponse) throws IOException {

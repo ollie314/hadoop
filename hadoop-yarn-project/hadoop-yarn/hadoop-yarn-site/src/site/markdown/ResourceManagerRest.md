@@ -34,6 +34,10 @@ ResourceManager REST API's.
 * [Cluster Application Priority API](#Cluster_Application_Priority_API)
 * [Cluster Delegation Tokens API](#Cluster_Delegation_Tokens_API)
 * [Cluster Reservation API List](#Cluster_Reservation_API_List)
+* [Cluster Reservation API Create](#Cluster_Reservation_API_Create)
+* [Cluster Reservation API Submit](#Cluster_Reservation_API_Submit)
+* [Cluster Reservation API Update](#Cluster_Reservation_API_Update)
+* [Cluster Reservation API Delete](#Cluster_Reservation_API_Delete)
 
 Overview
 --------
@@ -1377,6 +1381,7 @@ Response Body:
           "clusterId" : 1326815542473,
           "finalStatus" : "SUCCEEDED",
           "amHostHttpAddress" : "host.domain.com:8042",
+          "amRPCAddress" : "host.domain.com:4201",
           "progress" : 100,
           "name" : "word count",
           "startedTime" : 1326815573334,
@@ -1406,6 +1411,7 @@ Response Body:
           "clusterId" : 1326815542473,
           "finalStatus" : "SUCCEEDED",
           "amHostHttpAddress" : "host.domain.com:8042",
+          "amRPCAddress" : "host.domain.com:4202",
           "progress" : 100,
           "name" : "Sleep job",
           "startedTime" : 1326815641380,
@@ -1468,6 +1474,7 @@ Response Body:
     <elapsedTime>25196</elapsedTime>
     <amContainerLogs>http://host.domain.com:8042/node/containerlogs/container_1326815542473_0001_01_000001</amContainerLogs>
     <amHostHttpAddress>host.domain.com:8042</amHostHttpAddress>
+    <amRPCAddress>host.domain.com:4201</amRPCAddress>
     <allocatedMB>0</allocatedMB>
     <allocatedVCores>0</allocatedVCores>
     <runningContainers>0</runningContainers>
@@ -1497,6 +1504,7 @@ Response Body:
     <elapsedTime>148166</elapsedTime>
     <amContainerLogs>http://host.domain.com:8042/node/containerlogs/container_1326815542473_0002_01_000001</amContainerLogs>
     <amHostHttpAddress>host.domain.com:8042</amHostHttpAddress>
+    <amRPCAddress>host.domain.com:4202</amRPCAddress>
     <allocatedMB>0</allocatedMB>
     <allocatedVCores>0</allocatedVCores>
     <runningContainers>0</runningContainers>
@@ -1660,6 +1668,7 @@ Note that depending on security settings a user might not be able to see all the
 | elapsedTime | long | The elapsed time since the application started (in ms) |
 | amContainerLogs | string | The URL of the application master container logs |
 | amHostHttpAddress | string | The nodes http address of the application master |
+| amRPCAddress | string | The RPC address of the application master |
 | allocatedMB | int | The sum of memory in MB allocated to the application's running containers |
 | allocatedVCores | int | The sum of virtual cores allocated to the application's running containers |
 | runningContainers | int | The number of containers currently running for the application |
@@ -1699,6 +1708,7 @@ Response Body:
       "clusterId" : 1326821518301,
       "finalStatus" : "SUCCEEDED",
       "amHostHttpAddress" : "host.domain.com:8042",
+      "amRPCAddress" : "host.domain.com:4201",
       "progress" : 100,
       "name" : "Sleep job",
       "applicationType" : "Yarn",
@@ -1752,6 +1762,7 @@ Response Body:
   <elapsedTime>446748</elapsedTime>
   <amContainerLogs>http://host.domain.com:8042/node/containerlogs/container_1326821518301_0005_01_000001</amContainerLogs>
   <amHostHttpAddress>host.domain.com:8042</amHostHttpAddress>
+  <amRPCAddress>host.domain.com:4201</amRPCAddress>
   <memorySeconds>151730</memorySeconds>
   <vcoreSeconds>103</vcoreSeconds>
   <unmanagedApplication>false</unmanagedApplication>
@@ -3171,8 +3182,8 @@ The Cluster Reservation API can be used to list reservations. When listing reser
 | Item | Data Type | Description |
 |:---- |:---- |:---- |
 | arrival | long | The UTC time representation of the earliest time this reservation can be allocated from. |
-| deadline | long | The UTC time representation of the latest time within which this reservatino can be allocated. |
-| reservation-name | string | A mnemonic name of the reservaiton (not a valid identifier). |
+| deadline | long | The UTC time representation of the latest time within which this reservation can be allocated. |
+| reservation-name | string | A mnemonic name of the reservation (not a valid identifier). |
 | reservation-requests | object | A list of "stages" or phases of this reservation, each describing resource requirements and duration |
 
 ### Elements of the *reservation-requests* object
@@ -3329,3 +3340,510 @@ Response Body:
     </reservations>
 </reservationListInfo>
 ```
+
+Cluster Reservation API Create
+---------------------------
+
+Use the New Reservation API, to obtain a reservation-id which can then be used as part of the [Cluster Reservation API Submit](#Cluster_Reservation_API_Submit) to submit reservations.
+
+This feature is currently in the alpha stage and may change in the future.
+
+### URI
+
+      * http://<rm http address:port>/ws/v1/cluster/reservation/new-reservation
+
+### HTTP Operations Supported
+
+      * POST
+
+### Query Parameters Supported
+
+      None
+
+### Elements of the new-reservation object
+
+The new-reservation response contains the following elements:
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| reservation-id | string | The newly created reservation id |
+
+### Response Examples
+
+**JSON response**
+
+HTTP Request:
+
+      POST http://<rm http address:port>/ws/v1/cluster/reservation/new-reservation
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/json
+      Transfer-Encoding: chunked
+      Server: Jetty(6.1.26)
+
+Response Body:
+
+```json
+{
+  "reservation-id":"reservation_1404198295326_0003"
+}
+```
+
+**XML response**
+
+HTTP Request:
+
+      POST http://<rm http address:port>/ws/v1/cluster/reservation/new-reservation
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/xml
+      Content-Length: 248
+      Server: Jetty(6.1.26)
+
+Response Body:
+
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<new-reservation>
+  <reservation-id>reservation_1404198295326_0003</reservation-id>
+</new-reservation>
+```
+
+Cluster Reservation API Submit
+------------------------------
+
+The Cluster Reservation API can be used to submit reservations. When submitting a reservation the user specifies the constraints in terms of resources, and time that is required. The resulting response is successful if the reservation can be made. If a reservation-id is used to submit a reservation multiple times, the request will succeed if the reservation definition is the same, but only one reservation will be created. If the reservation definition is different, the server will respond with an error response. When the reservation is made, the user can use the reservation-id used to submit the reservation to get access to the resources by specifying it as part of [Cluster Submit Applications API](#Cluster_Applications_APISubmit_Application).
+
+### URI
+
+      * http://<rm http address:port>/ws/v1/cluster/reservation/submit
+
+### HTTP Operations Supported
+
+      * POST
+
+### POST Response Examples
+
+POST requests can be used to submit reservations to the ResourceManager. As mentioned above, a reservation-id is returned upon success (in the body of the answer). Successful submissions result in a 200 response. Please note that in order to submit a reservation, you must have an authentication filter setup for the HTTP interface. The functionality requires that a username is set in the HttpServletRequest. If no filter is setup, the response will be an "UNAUTHORIZED" response.
+
+Please note that this feature is currently in the alpha stage and may change in the future.
+
+#### Elements of the POST request object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| queue | string | The (reservable) queue you are submitting to|
+| reservation-definition | object | A set of constraints representing the need for resources over time of a user. |
+| reservation-id | string | The reservation id to use to submit the reservation. |
+
+Elements of the *reservation-definition* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+|arrival | long | The UTC time representation of the earliest time this reservation can be allocated from. |
+| deadline | long | The UTC time representation of the latest time within which this reservation can be allocated. |
+| reservation-name | string | A mnemonic name of the reservation (not a valid identifier). |
+| reservation-requests | object | A list of "stages" or phases of this reservation, each describing resource requirements and duration |
+
+Elements of the *reservation-requests* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| reservation-request-interpreter | int | A numeric choice of how to interpret the set of ReservationRequest: 0 is an ANY, 1 for ALL, 2 for ORDER, 3 for ORDER\_NO\_GAP |
+| reservation-request | object | The description of the resource and time capabilities for a phase/stage of this reservation |
+
+Elements of the *reservation-request* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| duration | long | The duration of a ReservationRequeust in milliseconds (amount of consecutive milliseconds a satisfiable allocation for this portion of the reservation should exist for). |
+| num-containers | int | The number of containers required in this phase of the reservation (capture the maximum parallelism of the job(s) in this phase). |
+| min-concurrency | int | The minimum number of containers that must be concurrently allocated to satisfy this allocation (capture min-parallelism, useful to express gang semantics). |
+| capability | object | Allows to specify the size of each container (memory, vCores).|
+
+Elements of the *capability* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| memory | int | the number of MB of memory for this container |
+| vCores | int | the number of virtual cores for this container |
+
+
+**JSON response**
+
+This examples contains a reservation composed of two stages (alternative to each other as the *reservation-request-interpreter* is set to 0), so that the first is shorter and "taller" and "gang"
+with exactly 220 containers for 60 seconds, while the second alternative is longer with 120 seconds duration and less tall with 110 containers (and a min-concurrency of 1 container, thus no gang semantics).
+
+HTTP Request:
+
+```json
+POST http://rmdns:8088/ws/v1/cluster/reservation/submit
+Content-Type: application/json
+{
+  "queue" : "dedicated",
+  "reservation-id":"reservation_1404198295326_0003"
+  "reservation-definition" : {
+     "arrival" : 1765541532000,
+     "deadline" : 1765542252000,
+     "reservation-name" : "res_1",
+     "reservation-requests" : {
+        "reservation-request-interpreter" : 0,
+        "reservation-request" : [
+           {
+             "duration" : 60000,
+             "num-containers" : 220,
+             "min-concurrency" : 220,
+             "capability" : {
+               "memory" : 1024,
+               "vCores" : 1
+             }
+           },
+           {
+             "duration" : 120000,
+             "num-containers" : 110,
+             "min-concurrency" : 1,
+             "capability" : {
+               "memory" : 1024,
+               "vCores" : 1
+             }
+           }
+        ]
+     }
+   }
+}
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Thu, 17 Dec 2015 23:36:34 GMT, Thu, 17 Dec 2015 23:36:34 GMT
+Date:  Thu, 17 Dec 2015 23:36:34 GMT, Thu, 17 Dec 2015 23:36:34 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/xml
+Content-Encoding:  gzip
+Content-Length:  137
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body
+
+**XML response**
+
+HTTP Request:
+
+```xml
+POST http://rmdns:8088/ws/v1/cluster/reservation/submit
+Accept: application/xml
+Content-Type: application/xml
+<reservation-submission-context>
+  <queue>dedicated</queue>
+  <reservation-id>reservation_1404198295326_0003</reservation-id>
+  <reservation-definition>
+     <arrival>1765541532000</arrival>
+     <deadline>1765542252000</deadline>
+     <reservation-name>res_1</reservation-name>
+     <reservation-requests>
+        <reservation-request-interpreter>0</reservation-request-interpreter>
+        <reservation-request>
+             <duration>60000</duration>
+             <num-containers>220</num-containers>
+             <min-concurrency>220</min-concurrency>
+             <capability>
+               <memory>1024</memory>
+               <vCores>1</vCores>
+             </capability>
+        </reservation-request>
+        <reservation-request>
+             <duration>120000</duration>
+             <num-containers>110</num-containers>
+             <min-concurrency>1</min-concurrency>
+             <capability>
+               <memory>1024</memory>
+               <vCores>1</vCores>
+             </capability>
+        </reservation-request>
+     </reservation-requests>
+  </reservation-definition>
+</reservation-submission-context>
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Thu, 17 Dec 2015 23:49:21 GMT, Thu, 17 Dec 2015 23:49:21 GMT
+Date:  Thu, 17 Dec 2015 23:49:21 GMT, Thu, 17 Dec 2015 23:49:21 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/xml
+Content-Encoding:  gzip
+Content-Length:  137
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body
+
+Cluster Reservation API Update
+------------------------------
+
+The Cluster Reservation API Update can be used to update existing reservations.Update of a Reservation works similarly to submit described above, but the user submits the reservation-id of an existing reservation to be updated. The semantics is a try-and-swap, successful operation will modify the existing reservation based on the requested update parameter, while a failed execution will leave the existing reservation unchanged.
+
+### URI
+
+      * http://<rm http address:port>/ws/v1/cluster/reservation/update
+
+### HTTP Operations Supported
+
+      * POST
+
+### POST Response Examples
+
+POST requests can be used to update reservations to the ResourceManager. Successful submissions result in a 200 response, indicate in-place update of the existing reservation (id does not change). Please note that in order to update a reservation, you must have an authentication filter setup for the HTTP interface. The functionality requires that a username is set in the HttpServletRequest. If no filter is setup, the response will be an "UNAUTHORIZED" response.
+
+Please note that this feature is currently in the alpha stage and may change in the future.
+
+#### Elements of the POST request object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| reservation-id | string | The id of the reservation to be updated (the system automatically looks up the right queue from this)|
+| reservation-definition | object | A set of constraints representing the need for resources over time of a user. |
+
+Elements of the *reservation-definition* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+|arrival | long | The UTC time representation of the earliest time this reservation can be allocated from. |
+| deadline | long | The UTC time representation of the latest time within which this reservation can be allocated. |
+| reservation-name | string | A mnemonic name of the reservation (not a valid identifier). |
+| reservation-requests | object | A list of "stages" or phases of this reservation, each describing resource requirements and duration |
+
+Elements of the *reservation-requests* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| reservation-request-interpreter | int | A numeric choice of how to interpret the set of ReservationRequest: 0 is an ANY, 1 for ALL, 2 for ORDER, 3 for ORDER\_NO\_GAP |
+| reservation-request | object | The description of the resource and time capabilities for a phase/stage of this reservation |
+
+Elements of the *reservation-request* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| duration | long | The duration of a ReservationRequeust in milliseconds (amount of consecutive milliseconds a satisfiable allocation for this portion of the reservation should exist for). |
+| num-containers | int | The number of containers required in this phase of the reservation (capture the maximum parallelism of the job(s) in this phase). |
+| min-concurrency | int | The minimum number of containers that must be concurrently allocated to satisfy this allocation (capture min-parallelism, useful to express gang semantics). |
+| capability | object | Allows to specify the size of each container (memory, vCores).|
+
+Elements of the *capability* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| memory | int | the number of MB of memory for this container |
+| vCores | int | the number of virtual cores for this container |
+
+
+**JSON response**
+
+This examples updates an existing reservation identified by *reservation_1449259268893_0005* with two stages (in order as the *reservation-request-interpreter* is set to 2), with the first stage being a "gang" of 10 containers for 5 minutes (min-concurrency of 10 containers) followed by a 50 containers for 10 minutes(min-concurrency of 1 container, thus no gang semantics).
+
+HTTP Request:
+
+```json
+POST http://rmdns:8088/ws/v1/cluster/reservation/update
+Accept: application/json
+Content-Type: application/json
+{
+  "reservation-id" : "reservation_1449259268893_0005",
+  "reservation-definition" : {
+     "arrival" : 1765541532000,
+     "deadline" : 1765542252000,
+     "reservation-name" : "res_1",
+     "reservation-requests" : {
+        "reservation-request-interpreter" : 2,
+        "reservation-request" : [
+           {
+             "duration" : 300000,
+             "num-containers" : 10,
+             "min-concurrency" : 10,
+             "capability" : {
+               "memory" : 1024,
+               "vCores" : 1
+             }
+           },
+           {
+             "duration" : 60000,
+             "num-containers" : 50,
+             "min-concurrency" : 1,
+             "capability" : {
+               "memory" : 1024,
+               "vCores" : 1
+             }
+           }
+          ]
+     }
+   }
+}
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Thu, 17 Dec 2015 23:36:34 GMT, Thu, 17 Dec 2015 23:36:34 GMT
+Date:  Thu, 17 Dec 2015 23:36:34 GMT, Thu, 17 Dec 2015 23:36:34 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/json
+Content-Encoding:  gzip
+Content-Length:  137
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body
+
+**XML response**
+
+HTTP Request:
+
+```xml
+POST http://rmdns:8088/ws/v1/cluster/reservation/update
+Accept: application/xml
+Content-Type: application/xml
+<reservation-update-context>
+  <reservation-id>reservation_1449259268893_0005</reservation-id>
+  <reservation-definition>
+     <arrival>1765541532000</arrival>
+     <deadline>1765542252000</deadline>
+     <reservation-name>res_1</reservation-name>
+     <reservation-requests>
+        <reservation-request-interpreter>2</reservation-request-interpreter>
+        <reservation-request>
+             <duration>300000</duration>
+             <num-containers>10</num-containers>
+             <min-concurrency>10</min-concurrency>
+             <capability>
+               <memory>1024</memory>
+               <vCores>1</vCores>
+             </capability>
+        </reservation-request>
+        <reservation-request>
+             <duration>60000</duration>
+             <num-containers>50</num-containers>
+             <min-concurrency>1</min-concurrency>
+             <capability>
+               <memory>1024</memory>
+               <vCores>1</vCores>
+             </capability>
+        </reservation-request>
+     </reservation-requests>
+  </reservation-definition>
+</reservation-update-context>
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Thu, 17 Dec 2015 23:49:21 GMT, Thu, 17 Dec 2015 23:49:21 GMT
+Date:  Thu, 17 Dec 2015 23:49:21 GMT, Thu, 17 Dec 2015 23:49:21 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/xml
+Content-Encoding:  gzip
+Content-Length:  137
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body
+
+Cluster Reservation API Delete
+------------------------------
+
+The Cluster Reservation API Delete can be used to delete existing reservations.Delete works similar to update. The requests contains the reservation-id, and if successful the reservation is cancelled, otherwise the reservation remains in the system.
+
+### URI
+
+      * http://<rm http address:port>/ws/v1/cluster/reservation/delete
+
+### HTTP Operations Supported
+
+      * POST
+
+### POST Response Examples
+
+POST requests can be used to delete reservations to the ResourceManager. Successful submissions result in a 200 response, indicating that the delete succeeded. Please note that in order to delete a reservation, you must have an authentication filter setup for the HTTP interface. The functionality requires that a username is set in the HttpServletRequest. If no filter is setup, the response will be an "UNAUTHORIZED" response.
+
+Please note that this feature is currently in the alpha stage and may change in the future.
+
+#### Elements of the POST request object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| reservation-id | string | The id of the reservation to be deleted (the system automatically looks up the right queue from this)|
+
+
+**JSON response**
+
+This examples deletes an existing reservation identified by *reservation_1449259268893_0006*
+
+HTTP Request:
+
+```json
+POST http://10.200.91.98:8088/ws/v1/cluster/reservation/delete
+Accept: application/json
+Content-Type: application/json
+{
+  "reservation-id" : "reservation_1449259268893_0006"
+}
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Fri, 18 Dec 2015 01:31:05 GMT, Fri, 18 Dec 2015 01:31:05 GMT
+Date:  Fri, 18 Dec 2015 01:31:05 GMT, Fri, 18 Dec 2015 01:31:05 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/json
+Content-Encoding:  gzip
+Transfer-Encoding:  chunked
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body
+
+**XML response**
+
+HTTP Request:
+
+```xml
+POST http://10.200.91.98:8088/ws/v1/cluster/reservation/delete
+Accept: application/xml
+Content-Type: application/xml
+<reservation-delete-context>
+<reservation-id>reservation_1449259268893_0006</reservation-id>
+</reservation-delete-context>
+```
+
+Response Header:
+
+200 OK
+Cache-Control:  no-cache
+Expires:  Fri, 18 Dec 2015 01:33:23 GMT, Fri, 18 Dec 2015 01:33:23 GMT
+Date:  Fri, 18 Dec 2015 01:33:23 GMT, Fri, 18 Dec 2015 01:33:23 GMT
+Pragma:  no-cache, no-cache
+Content-Type:  application/xml
+Content-Encoding:  gzip
+Content-Length:  101
+Server:  Jetty(6.1.26)
+
+Response Body:
+
+      No response body

@@ -55,6 +55,7 @@ import org.apache.hadoop.hdfs.server.namenode.RetryStartFileException;
 import org.apache.hadoop.hdfs.server.namenode.SafeModeException;
 import org.apache.hadoop.hdfs.util.ByteArrayManager;
 import org.apache.hadoop.io.EnumSetWritable;
+import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.token.Token;
@@ -116,6 +117,7 @@ public class DFSOutputStream extends FSOutputSummer
   private long initialFileSize = 0; // at time of file open
   private final short blockReplication; // replication factor of file
   protected boolean shouldSyncBlock = false; // force blocks to disk upon close
+  private final EnumSet<AddBlockFlag> addBlockFlags;
   protected final AtomicReference<CachingStrategy> cachingStrategy;
   private FileEncryptionInfo fileEncryptionInfo;
 
@@ -178,6 +180,7 @@ public class DFSOutputStream extends FSOutputSummer
   }
 
   private DFSOutputStream(DFSClient dfsClient, String src,
+      EnumSet<CreateFlag> flag,
       Progressable progress, HdfsFileStatus stat, DataChecksum checksum) {
     super(getChecksum4Compute(checksum, stat));
     this.dfsClient = dfsClient;
@@ -188,6 +191,10 @@ public class DFSOutputStream extends FSOutputSummer
     this.fileEncryptionInfo = stat.getFileEncryptionInfo();
     this.cachingStrategy = new AtomicReference<>(
         dfsClient.getDefaultWriteCachingStrategy());
+    this.addBlockFlags = EnumSet.noneOf(AddBlockFlag.class);
+    if (flag.contains(CreateFlag.NO_LOCAL_WRITE)) {
+      this.addBlockFlags.add(AddBlockFlag.NO_LOCAL_WRITE);
+    }
     if (progress != null) {
       DFSClient.LOG.debug("Set non-null progress callback on DFSOutputStream "
           +"{}", src);
@@ -211,14 +218,14 @@ public class DFSOutputStream extends FSOutputSummer
   protected DFSOutputStream(DFSClient dfsClient, String src, HdfsFileStatus stat,
       EnumSet<CreateFlag> flag, Progressable progress,
       DataChecksum checksum, String[] favoredNodes) throws IOException {
-    this(dfsClient, src, progress, stat, checksum);
+    this(dfsClient, src, flag, progress, stat, checksum);
     this.shouldSyncBlock = flag.contains(CreateFlag.SYNC_BLOCK);
 
     computePacketChunkSize(dfsClient.getConf().getWritePacketSize(),
         bytesPerChecksum);
 
     streamer = new DataStreamer(stat, null, dfsClient, src, progress, checksum,
-        cachingStrategy, byteArrayManager, favoredNodes);
+        cachingStrategy, byteArrayManager, favoredNodes, addBlockFlags);
   }
 
   static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
@@ -280,7 +287,7 @@ public class DFSOutputStream extends FSOutputSummer
       EnumSet<CreateFlag> flags, Progressable progress, LocatedBlock lastBlock,
       HdfsFileStatus stat, DataChecksum checksum, String[] favoredNodes)
           throws IOException {
-    this(dfsClient, src, progress, stat, checksum);
+    this(dfsClient, src, flags, progress, stat, checksum);
     initialFileSize = stat.getLen(); // length of file when opened
     this.shouldSyncBlock = flags.contains(CreateFlag.SYNC_BLOCK);
 
@@ -301,7 +308,8 @@ public class DFSOutputStream extends FSOutputSummer
           bytesPerChecksum);
       streamer = new DataStreamer(stat,
           lastBlock != null ? lastBlock.getBlock() : null, dfsClient, src,
-          progress, checksum, cachingStrategy, byteArrayManager, favoredNodes);
+          progress, checksum, cachingStrategy, byteArrayManager, favoredNodes,
+          addBlockFlags);
     }
   }
 
@@ -702,6 +710,7 @@ public class DFSOutputStream extends FSOutputSummer
    * resources associated with this stream.
    */
   void abort() throws IOException {
+    final MultipleIOException.Builder b = new MultipleIOException.Builder();
     synchronized (this) {
       if (isClosed()) {
         return;
@@ -710,9 +719,19 @@ public class DFSOutputStream extends FSOutputSummer
           new IOException("Lease timeout of "
               + (dfsClient.getConf().getHdfsTimeout() / 1000)
               + " seconds expired."));
-      closeThreads(true);
+
+      try {
+        closeThreads(true);
+      } catch (IOException e) {
+        b.add(e);
+      }
     }
+
     dfsClient.endFileLease(fileId);
+    final IOException ioe = b.build();
+    if (ioe != null) {
+      throw ioe;
+    }
   }
 
   boolean isClosed() {
@@ -745,13 +764,21 @@ public class DFSOutputStream extends FSOutputSummer
    */
   @Override
   public void close() throws IOException {
+    final MultipleIOException.Builder b = new MultipleIOException.Builder();
     synchronized (this) {
       try (TraceScope ignored = dfsClient.newPathTraceScope(
           "DFSOutputStream#close", src)) {
         closeImpl();
+      } catch (IOException e) {
+        b.add(e);
       }
     }
+
     dfsClient.endFileLease(fileId);
+    final IOException ioe = b.build();
+    if (ioe != null) {
+      throw ioe;
+    }
   }
 
   protected synchronized void closeImpl() throws IOException {
@@ -815,7 +842,7 @@ public class DFSOutputStream extends FSOutputSummer
         try {
           if (retries == 0) {
             throw new IOException("Unable to close file because the last block"
-                + " does not have enough number of replicas.");
+                + last + " does not have enough number of replicas.");
           }
           retries--;
           Thread.sleep(sleeptime);
@@ -846,6 +873,10 @@ public class DFSOutputStream extends FSOutputSummer
    */
   public long getInitialLen() {
     return initialFileSize;
+  }
+
+  protected EnumSet<AddBlockFlag> getAddBlockFlags() {
+    return addBlockFlags;
   }
 
   /**

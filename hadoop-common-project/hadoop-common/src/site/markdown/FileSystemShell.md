@@ -27,6 +27,11 @@ Most of the commands in FS shell behave like corresponding Unix commands. Differ
 
 If HDFS is being used, `hdfs dfs` is a synonym.
 
+Relative paths can be used. For HDFS, the current working directory is the
+HDFS home directory `/user/<username>` that often has to be created manually.
+The HDFS home directory can also be implicitly accessed, e.g., when using the
+HDFS trash folder, the `.Trash` directory in the home directory.
+
 See the [Commands Manual](./CommandsManual.html) for generic shell options.
 
 appendToFile
@@ -127,9 +132,11 @@ Similar to get command, except that the destination is restricted to a local fil
 count
 -----
 
-Usage: `hadoop fs -count [-q] [-h] [-v] [-t [<storage type>]] [-u] <paths> `
+Usage: `hadoop fs -count [-q] [-h] [-v] [-x] [-t [<storage type>]] [-u] <paths> `
 
 Count the number of directories, files and bytes under the paths that match the specified file pattern. Get the quota and the usage. The output columns with -count are: DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
+
+The -u and -q options control what columns the output contains.  -q means show quotas, -u limits the output to show quotas and usage only.
 
 The output columns with -count -q are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
@@ -140,6 +147,8 @@ The -t option shows the quota and usage for each storage type.
 The -h option shows sizes in human readable format.
 
 The -v option displays a header line.
+
+The -x option excludes snapshots from the result calculation. Without the -x option (default), the result is always calculated from all INodes, including all snapshots under the given path. The -x option is ignored if -u or -q option is given.
 
 Example:
 
@@ -206,14 +215,15 @@ Example:
 du
 ----
 
-Usage: `hadoop fs -du [-s] [-h] URI [URI ...]`
+Usage: `hadoop fs -du [-s] [-h] [-x] URI [URI ...]`
 
 Displays sizes of files and directories contained in the given directory or the length of a file in case its just a file.
 
 Options:
 
-* The -s option will result in an aggregate summary of file lengths being displayed, rather than the individual files.
+* The -s option will result in an aggregate summary of file lengths being displayed, rather than the individual files. Without the -s option, calculation is done by going 1-level deep from the given path.
 * The -h option will format file sizes in a "human-readable" fashion (e.g 64.0m instead of 67108864)
+* The -x option will exclude snapshots from the result calculation. Without the -x option (default), the result is always calculated from all INodes, including all snapshots under the given path.
 
 The du returns three columns with the following format:
 
@@ -379,13 +389,14 @@ Return usage output.
 ls
 ----
 
-Usage: `hadoop fs -ls [-C] [-d] [-h] [-R] [-t] [-S] [-r] [-u] <args> `
+Usage: `hadoop fs -ls [-C] [-d] [-h] [-q] [-R] [-t] [-S] [-r] [-u] <args> `
 
 Options:
 
 * -C: Display the paths of files and directories only.
 * -d: Directories are listed as plain files.
 * -h: Format file sizes in a human-readable fashion (eg 64.0m instead of 67108864).
+* -q: Print ? instead of non-printable characters.
 * -R: Recursively list subdirectories encountered.
 * -t: Sort output by modification time (most recent first).
 * -S: Sort output by file size.
@@ -493,7 +504,7 @@ See [HDFS Snapshots Guide](../hadoop-hdfs/HdfsSnapshots.html).
 rm
 ----
 
-Usage: `hadoop fs -rm [-f] [-r |-R] [-skipTrash] URI [URI ...]`
+Usage: `hadoop fs -rm [-f] [-r |-R] [-skipTrash] [-safely] URI [URI ...]`
 
 Delete files specified as args.
 
@@ -512,6 +523,7 @@ Options:
 * The -R option deletes the directory and any content under it recursively.
 * The -r option is equivalent to -R.
 * The -skipTrash option will bypass trash, if enabled, and delete the specified file(s) immediately. This can be useful when it is necessary to delete files from an over-quota directory.
+* The -safely option will require safety confirmation before deleting directory with total number of files greater than `hadoop.shell.delete.limit.num.files` (in core-site.xml, default: 100). It can be used with -skipTrash to prevent accidental deletion of large directories. Delay is expected when walking over large directory recursively to count the number of files to be deleted before the confirmation.
 
 Example:
 
@@ -663,7 +675,10 @@ Options:
 * -e: if the path exists, return 0.
 * -f: if the path is a file, return 0.
 * -s: if the path is not empty, return 0.
+* -r: if the path exists and read permission is granted, return 0.
+* -w: if the path exists and write permission is granted, return 0.
 * -z: if the file is zero length, return 0.
+
 
 Example:
 

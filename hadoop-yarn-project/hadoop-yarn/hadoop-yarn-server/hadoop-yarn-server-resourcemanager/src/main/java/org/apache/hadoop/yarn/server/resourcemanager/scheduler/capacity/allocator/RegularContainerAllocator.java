@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -78,7 +79,7 @@ public class RegularContainerAllocator extends AbstractContainerAllocator {
   private ContainerAllocation preCheckForNewContainer(Resource clusterResource,
       FiCaSchedulerNode node, SchedulingMode schedulingMode,
       ResourceLimits resourceLimits, Priority priority) {
-    if (SchedulerAppUtils.isBlacklisted(application, node, LOG)) {
+    if (SchedulerAppUtils.isPlaceBlacklisted(application, node, LOG)) {
       application.updateAppSkipNodeDiagnostics(
           CSAMContainerLaunchDiagnosticsConstants.SKIP_AM_ALLOCATION_IN_BLACK_LISTED_NODE);
       return ContainerAllocation.APP_SKIPPED;
@@ -442,7 +443,7 @@ public class RegularContainerAllocator extends AbstractContainerAllocator {
         priority, capability);
 
     // Can we allocate a container on this node?
-    int availableContainers =
+    long availableContainers =
         rc.computeAvailableContainers(available, capability);
 
     // How much need to unreserve equals to:
@@ -660,14 +661,21 @@ public class RegularContainerAllocator extends AbstractContainerAllocator {
       }
 
       // Non-exclusive scheduling opportunity is different: we need reset
-      // it every time to make sure non-labeled resource request will be
+      // it when:
+      // - It allocated on the default partition
+      //
+      // This is to make sure non-labeled resource request will be
       // most likely allocated on non-labeled nodes first.
-      application.resetMissedNonPartitionedRequestSchedulingOpportunity(priority);
+      if (StringUtils.equals(node.getPartition(),
+          RMNodeLabelsManager.NO_LABEL)) {
+        application
+            .resetMissedNonPartitionedRequestSchedulingOpportunity(priority);
+      }
     }
 
     return allocationResult;
   }
-  
+
   private ContainerAllocation allocate(Resource clusterResource,
       FiCaSchedulerNode node, SchedulingMode schedulingMode,
       ResourceLimits resourceLimits, Priority priority,

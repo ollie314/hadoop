@@ -31,6 +31,7 @@ import org.junit.*;
 
 import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosPrincipal;
+import javax.security.auth.kerberos.KeyTab;
 import javax.security.auth.login.AppConfigurationEntry;
 import javax.security.auth.login.LoginContext;
 
@@ -280,10 +281,15 @@ public class TestUserGroupInformation {
     UserGroupInformation.setConfiguration(conf);
     testConstructorSuccess("user1", "user1");
     testConstructorSuccess("user4@OTHER.REALM", "other-user4");
-    // failure test
-    testConstructorFailures("user2@DEFAULT.REALM");
-    testConstructorFailures("user3/cron@DEFAULT.REALM");
-    testConstructorFailures("user5/cron@OTHER.REALM");
+
+    // pass through test, no transformation
+    testConstructorSuccess("user2@DEFAULT.REALM", "user2@DEFAULT.REALM");
+    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3/cron@DEFAULT.REALM");
+    testConstructorSuccess("user5/cron@OTHER.REALM", "user5/cron@OTHER.REALM");
+
+    // failures
+    testConstructorFailures("user6@example.com@OTHER.REALM");
+    testConstructorFailures("user7@example.com@DEFAULT.REALM");
     testConstructorFailures(null);
     testConstructorFailures("");
   }
@@ -297,10 +303,13 @@ public class TestUserGroupInformation {
 
     testConstructorSuccess("user1", "user1");
     testConstructorSuccess("user2@DEFAULT.REALM", "user2");
-    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3");    
+    testConstructorSuccess("user3/cron@DEFAULT.REALM", "user3");
+
+    // no rules applied, local name remains the same
+    testConstructorSuccess("user4@OTHER.REALM", "user4@OTHER.REALM");
+    testConstructorSuccess("user5/cron@OTHER.REALM", "user5/cron@OTHER.REALM");
+
     // failure test
-    testConstructorFailures("user4@OTHER.REALM");
-    testConstructorFailures("user5/cron@OTHER.REALM");
     testConstructorFailures(null);
     testConstructorFailures("");
   }
@@ -341,8 +350,9 @@ public class TestUserGroupInformation {
     } catch (IllegalArgumentException e) {
       String expect = (userName == null || userName.isEmpty())
           ? "Null user" : "Illegal principal name "+userName;
-      assertTrue("Did not find "+ expect + " in " + e,
-          e.toString().contains(expect));
+      String expect2 = "Malformed Kerberos name: "+userName;
+      assertTrue("Did not find "+ expect + " or " + expect2 + " in " + e,
+          e.toString().contains(expect) || e.toString().contains(expect2));
     }
   }
 
@@ -431,8 +441,10 @@ public class TestUserGroupInformation {
     UserGroupInformation uugi = 
       UserGroupInformation.createUserForTesting(USER_NAME, GROUP_NAMES);
     assertEquals(USER_NAME, uugi.getUserName());
-    assertArrayEquals(new String[]{GROUP1_NAME, GROUP2_NAME, GROUP3_NAME},
-                      uugi.getGroupNames());
+    String[] expected = new String[]{GROUP1_NAME, GROUP2_NAME, GROUP3_NAME};
+    assertArrayEquals(expected, uugi.getGroupNames());
+    assertArrayEquals(expected, uugi.getGroups().toArray(new String[0]));
+    assertEquals(GROUP1_NAME, uugi.getPrimaryGroupName());
   }
 
   @SuppressWarnings("unchecked") // from Mockito mocks
@@ -891,5 +903,28 @@ public class TestUserGroupInformation {
         }
       }
     }
+  }
+
+  @Test
+  public void testCheckTGTAfterLoginFromSubject() throws Exception {
+    // security on, default is remove default realm
+    SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS, conf);
+    UserGroupInformation.setConfiguration(conf);
+
+    // Login from a pre-set subject with a keytab
+    final Subject subject = new Subject();
+    KeyTab keytab = KeyTab.getInstance();
+    subject.getPrivateCredentials().add(keytab);
+    UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+    ugi.doAs(new PrivilegedExceptionAction<Void>() {
+      @Override
+      public Void run() throws IOException {
+        UserGroupInformation.loginUserFromSubject(subject);
+        // this should not throw.
+        UserGroupInformation.getLoginUser().checkTGTAndReloginFromKeytab();
+        return null;
+      }
+    });
+
   }
 }

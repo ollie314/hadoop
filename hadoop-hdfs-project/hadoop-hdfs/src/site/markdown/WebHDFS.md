@@ -169,7 +169,7 @@ The HTTP REST API supports the complete [FileSystem](../../api/org/apache/hadoop
 *   HTTP POST
     * [`APPEND`](#Append_to_a_File) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).append)
     * [`CONCAT`](#Concat_Files) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).concat)
-    * [`TRUNCATE`](#Truncate_a_File) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).concat)
+    * [`TRUNCATE`](#Truncate_a_File) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).truncate)
 *   HTTP DELETE
     * [`DELETE`](#Delete_a_FileDirectory) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).delete)
     * [`DELETESNAPSHOT`](#Delete_Snapshot) (see [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).deleteSnapshot)
@@ -344,6 +344,8 @@ File and Directory Operations
         Location: webhdfs://<HOST>:<PORT>/<PATH>
         Content-Length: 0
 
+If no permissions are specified, the newly created file will be assigned with default 755 permission. This also applies for new directories. No umask mode will be applied from server side (so "fs.permissions.umask-mode" value configuration set on Namenode side will have no effect).
+
 **Note** that the reason of having two-step create/append is for preventing clients to send out data before the redirect. This issue is addressed by the "`Expect: 100-continue`" header in HTTP/1.1; see [RFC 2616, Section 8.2.3](http://www.w3.org/Protocols/rfc2616/rfc2616-sec8.html#sec8.2.3). Unfortunately, there are software library bugs (e.g. Jetty 6 HTTP server and Java 6 HTTP client), which do not correctly implement "`Expect: 100-continue`". The two-step create/append is a temporary workaround for the software library bugs.
 
 See also: [`overwrite`](#Overwrite), [`blocksize`](#Block_Size), [`replication`](#Replication), [`permission`](#Permission), [`buffersize`](#Buffer_Size), [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).create
@@ -422,6 +424,8 @@ See also: [`offset`](#Offset), [`length`](#Length), [`buffersize`](#Buffer_Size)
         Transfer-Encoding: chunked
 
         {"boolean": true}
+
+If no permissions are specified, the newly created directory will be assigned with default 755 permission. This also applies to new files created. No umask mode will be applied from server side (so "fs.permissions.umask-mode" value configuration set on Namenode side will have no effect).
 
 See also: [`permission`](#Permission), [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html).mkdirs
 
@@ -1159,7 +1163,7 @@ All operations, except for [`OPEN`](#Open_and_Read_a_File), either return a zero
       {
         "entries":
         {
-          "type": "array"
+          "type": "array",
           "items":
           {
             "description": "ACL entry.",
@@ -1183,7 +1187,7 @@ All operations, except for [`OPEN`](#Open_and_Read_a_File), either return a zero
           "description": "True if the sticky bit is on.",
           "type"       : "boolean",
           "required"   : true
-        },
+        }
       }
     }
   }
@@ -1202,7 +1206,7 @@ All operations, except for [`OPEN`](#Open_and_Read_a_File), either return a zero
       "type"      : "array",
       "items":
       {
-        "type"    " "object",
+        "type"    : "object",
         "properties":
         {
           "name":
@@ -1233,7 +1237,7 @@ All operations, except for [`OPEN`](#Open_and_Read_a_File), either return a zero
     "XAttrNames":
     {
       "description": "XAttr names.",
-      "type"       : "string"
+      "type"       : "string",
       "required"   : true
     }
   }
@@ -1602,7 +1606,7 @@ See also: [`GETHOMEDIRECTORY`](#Get_Home_Directory), [Path](../../api/org/apache
         "javaClassName":                                     //an optional property
         {
           "description": "Java class name of the exception",
-          "type"       : "string",
+          "type"       : "string"
         }
       }
     }

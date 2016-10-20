@@ -171,5 +171,5 @@ public interface RMNode {
 
   long getUntrackedTimeStamp();
 
-  void setUntrackedTimeStamp(long timer);
+  void setUntrackedTimeStamp(long timeStamp);
 }

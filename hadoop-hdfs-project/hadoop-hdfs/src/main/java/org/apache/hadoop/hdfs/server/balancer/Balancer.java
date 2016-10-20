@@ -21,6 +21,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.text.DateFormat;
 import java.util.Arrays;
@@ -55,6 +56,9 @@ import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.HostsFileReader;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
@@ -230,6 +234,15 @@ public class Balancer {
     return v;
   }
 
+  static long getLongBytes(Configuration conf, String key, long defaultValue) {
+    final long v = conf.getLongBytes(key, defaultValue);
+    LOG.info(key + " = " + v + " (default=" + defaultValue + ")");
+    if (v <= 0) {
+      throw new HadoopIllegalArgumentException(key + " = " + v  + " <= " + 0);
+    }
+    return v;
+  }
+
   static int getInt(Configuration conf, String key, int defaultValue) {
     final int v = conf.getInt(key, defaultValue);
     LOG.info(key + " = " + v + " (default=" + defaultValue + ")");
@@ -261,10 +274,10 @@ public class Balancer {
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT);
 
-    final long getBlocksSize = getLong(conf,
+    final long getBlocksSize = getLongBytes(conf,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_SIZE_KEY,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_SIZE_DEFAULT);
-    final long getBlocksMinBlockSize = getLong(conf,
+    final long getBlocksMinBlockSize = getLongBytes(conf,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_MIN_BLOCK_SIZE_KEY,
         DFSConfigKeys.DFS_BALANCER_GETBLOCKS_MIN_BLOCK_SIZE_DEFAULT);
 
@@ -279,10 +292,10 @@ public class Balancer {
     this.sourceNodes = p.getSourceNodes();
     this.runDuringUpgrade = p.getRunDuringUpgrade();
 
-    this.maxSizeToMove = getLong(conf,
+    this.maxSizeToMove = getLongBytes(conf,
         DFSConfigKeys.DFS_BALANCER_MAX_SIZE_TO_MOVE_KEY,
         DFSConfigKeys.DFS_BALANCER_MAX_SIZE_TO_MOVE_DEFAULT);
-    this.defaultBlockSize = getLong(conf,
+    this.defaultBlockSize = getLongBytes(conf,
         DFSConfigKeys.DFS_BLOCK_SIZE_KEY,
         DFSConfigKeys.DFS_BLOCK_SIZE_DEFAULT);
   }
@@ -520,13 +533,19 @@ public class Balancer {
         final C c = candidates.next();
         if (!c.hasSpaceForScheduling()) {
           candidates.remove();
-        } else if (matcher.match(dispatcher.getCluster(),
-            g.getDatanodeInfo(), c.getDatanodeInfo())) {
+        } else if (matchStorageGroups(c, g, matcher)) {
           return c;
         }
       }
     }
     return null;
+  }
+
+  private boolean matchStorageGroups(StorageGroup left, StorageGroup right,
+      Matcher matcher) {
+    return left.getStorageType() == right.getStorageType()
+        && matcher.match(dispatcher.getCluster(),
+            left.getDatanodeInfo(), right.getDatanodeInfo());
   }
 
   /* reset all fields in a balancer preparing for the next iteration */
@@ -589,6 +608,8 @@ public class Balancer {
       if (!runDuringUpgrade && nnc.isUpgrading()) {
         System.err.println("Balancer exiting as upgrade is not finalized, "
             + "please finalize the HDFS upgrade before running the balancer.");
+        LOG.error("Balancer exiting as upgrade is not finalized, "
+            + "please finalize the HDFS upgrade before running the balancer.");
         return newResult(ExitStatus.UNFINALIZED_UPGRADE, bytesLeftToMove, -1);
       }
 
@@ -649,7 +670,7 @@ public class Balancer {
     LOG.info("included nodes = " + p.getIncludedNodes());
     LOG.info("excluded nodes = " + p.getExcludedNodes());
     LOG.info("source nodes = " + p.getSourceNodes());
-
+    checkKeytabAndInit(conf);
     System.out.println("Time Stamp               Iteration#  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved");
     
     List<NameNodeConnector> connectors = Collections.emptyList();
@@ -693,6 +714,22 @@ public class Balancer {
     return ExitStatus.SUCCESS.getExitCode();
   }
 
+  private static void checkKeytabAndInit(Configuration conf)
+      throws IOException {
+    if (conf.getBoolean(DFSConfigKeys.DFS_BALANCER_KEYTAB_ENABLED_KEY,
+        DFSConfigKeys.DFS_BALANCER_KEYTAB_ENABLED_DEFAULT)) {
+      LOG.info("Keytab is configured, will login using keytab.");
+      UserGroupInformation.setConfiguration(conf);
+      String addr = conf.get(DFSConfigKeys.DFS_BALANCER_ADDRESS_KEY,
+          DFSConfigKeys.DFS_BALANCER_ADDRESS_DEFAULT);
+      InetSocketAddress socAddr = NetUtils.createSocketAddr(addr, 0,
+          DFSConfigKeys.DFS_BALANCER_ADDRESS_KEY);
+      SecurityUtil.login(conf, DFSConfigKeys.DFS_BALANCER_KEYTAB_FILE_KEY,
+          DFSConfigKeys.DFS_BALANCER_KERBEROS_PRINCIPAL_KEY,
+          socAddr.getHostName());
+    }
+  }
+
   /* Given elaspedTime in ms, return a printable string */
   private static String time2Str(long elapsedTime) {
     String unit;
@@ -728,7 +765,7 @@ public class Balancer {
       try {
         checkReplicationPolicyCompatibility(conf);
 
-        final Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+        final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
         return Balancer.run(namenodes, parse(args), conf);
       } catch (IOException e) {
         System.out.println(e + ".  Exiting ...");

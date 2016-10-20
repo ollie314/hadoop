@@ -32,15 +32,17 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 
+import org.apache.commons.collections.map.LinkedMap;
 import org.apache.commons.lang.mutable.MutableBoolean;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.BlockReaderFactory;
-import org.apache.hadoop.hdfs.BlockReaderTestUtil;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderFactory;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderTestUtil;
 import org.apache.hadoop.hdfs.DFSInputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -501,8 +503,8 @@ public class TestShortCircuitCache {
       public void visit(int numOutstandingMmaps,
           Map<ExtendedBlockId, ShortCircuitReplica> replicas,
           Map<ExtendedBlockId, InvalidToken> failedLoads,
-          Map<Long, ShortCircuitReplica> evictable,
-          Map<Long, ShortCircuitReplica> evictableMmapped) {
+          LinkedMap evictable,
+          LinkedMap evictableMmapped) {
         ShortCircuitReplica replica = replicas.get(
             ExtendedBlockId.fromExtendedBlock(block));
         Assert.assertNotNull(replica);
@@ -517,8 +519,8 @@ public class TestShortCircuitCache {
       public void visit(int numOutstandingMmaps,
           Map<ExtendedBlockId, ShortCircuitReplica> replicas,
           Map<ExtendedBlockId, InvalidToken> failedLoads,
-          Map<Long, ShortCircuitReplica> evictable,
-          Map<Long, ShortCircuitReplica> evictableMmapped) {
+          LinkedMap evictable,
+          LinkedMap evictableMmapped) {
         ShortCircuitReplica replica = replicas.get(
             ExtendedBlockId.fromExtendedBlock(block));
         Assert.assertNotNull(replica);
@@ -624,15 +626,22 @@ public class TestShortCircuitCache {
   }
 
   static private void checkNumberOfSegmentsAndSlots(final int expectedSegments,
-        final int expectedSlots, ShortCircuitRegistry registry) {
-    registry.visit(new ShortCircuitRegistry.Visitor() {
+        final int expectedSlots, final ShortCircuitRegistry registry)
+  throws InterruptedException, TimeoutException {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
       @Override
-      public void accept(HashMap<ShmId, RegisteredShm> segments,
-                         HashMultimap<ExtendedBlockId, Slot> slots) {
-        Assert.assertEquals(expectedSegments, segments.size());
-        Assert.assertEquals(expectedSlots, slots.size());
+      public Boolean get() {
+        return registry.visit(new ShortCircuitRegistry.Visitor() {
+          @Override
+          public boolean accept(HashMap<ShmId, RegisteredShm> segments,
+              HashMultimap<ExtendedBlockId, Slot> slots) {
+            return (expectedSegments == segments.size()) &&
+                (expectedSlots == slots.size());
+          }
+        });
       }
-    });
+    }, 100, 10000);
+
   }
 
   public static class TestCleanupFailureInjector
@@ -774,16 +783,8 @@ public class TestShortCircuitCache {
     DFSTestUtil.createFile(fs, TEST_PATH2, 4096, (short)1, 0xFADE2);
     DFSTestUtil.readFileBuffer(fs, TEST_PATH1);
     DFSTestUtil.readFileBuffer(fs, TEST_PATH2);
-    ShortCircuitRegistry registry =
-        cluster.getDataNodes().get(0).getShortCircuitRegistry();
-    registry.visit(new ShortCircuitRegistry.Visitor() {
-      @Override
-      public void accept(HashMap<ShmId, RegisteredShm> segments,
-                         HashMultimap<ExtendedBlockId, Slot> slots) {
-        Assert.assertEquals(1, segments.size());
-        Assert.assertEquals(2, slots.size());
-      }
-    });
+    checkNumberOfSegmentsAndSlots(1, 2,
+        cluster.getDataNodes().get(0).getShortCircuitRegistry());
     cluster.shutdown();
     sockDir.close();
   }

@@ -37,7 +37,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
@@ -86,9 +86,9 @@ public class TestDeadDatanode {
     String poolId = cluster.getNamesystem().getBlockPoolId();
     // wait for datanode to be marked live
     DataNode dn = cluster.getDataNodes().get(0);
-    DatanodeRegistration reg = 
-      DataNodeTestUtils.getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
-      
+    DatanodeRegistration reg = InternalDataNodeTestUtils.
+      getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
+
     DFSTestUtil.waitForDatanodeState(cluster, reg.getDatanodeUuid(), true, 20000);
 
     // Shutdown and wait for datanode to be marked dead
@@ -128,7 +128,7 @@ public class TestDeadDatanode {
     // that asks datanode to register again
     StorageReport[] rep = { new StorageReport(
         new DatanodeStorage(reg.getDatanodeUuid()),
-        false, 0, 0, 0, 0) };
+        false, 0, 0, 0, 0, 0) };
     DatanodeCommand[] cmd =
         dnp.sendHeartbeat(reg, rep, 0L, 0L, 0, 0, 0, null, true).getCommands();
     assertEquals(1, cmd.length);
@@ -147,8 +147,8 @@ public class TestDeadDatanode {
     String poolId = cluster.getNamesystem().getBlockPoolId();
     // wait for datanode to be marked live
     DataNode dn = cluster.getDataNodes().get(0);
-    DatanodeRegistration reg = DataNodeTestUtils.getDNRegistrationForBP(cluster
-        .getDataNodes().get(0), poolId);
+    DatanodeRegistration reg = InternalDataNodeTestUtils.
+        getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
     // Get the updated datanode descriptor
     BlockManager bm = cluster.getNamesystem().getBlockManager();
     DatanodeManager dm = bm.getDatanodeManager();
@@ -165,7 +165,8 @@ public class TestDeadDatanode {
     // choose the targets, but local node should not get selected as this is not
     // part of the cluster anymore
     DatanodeStorageInfo[] results = bm.chooseTarget4NewBlock("/hello", 3,
-        clientNode, new HashSet<Node>(), 256 * 1024 * 1024L, null, (byte) 7);
+        clientNode, new HashSet<Node>(), 256 * 1024 * 1024L, null, (byte) 7,
+            null);
     for (DatanodeStorageInfo datanodeStorageInfo : results) {
       assertFalse("Dead node should not be choosen", datanodeStorageInfo
           .getDatanodeDescriptor().equals(clientNode));

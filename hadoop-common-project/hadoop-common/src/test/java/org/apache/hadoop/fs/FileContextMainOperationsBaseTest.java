@@ -29,6 +29,7 @@ import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.fs.Options.CreateOpts;
 import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.After;
 import org.junit.Assert;
 import static org.junit.Assert.*;
@@ -99,8 +100,7 @@ public abstract class FileContextMainOperationsBaseTest  {
   
   @Before
   public void setUp() throws Exception {
-    File testBuildData = new File(System.getProperty("test.build.data",
-            "build/test/data"), RandomStringUtils.randomAlphanumeric(10));
+    File testBuildData = GenericTestUtils.getRandomizedTestDir();
     Path rootPath = new Path(testBuildData.getAbsolutePath(), 
             "root-uri");
     localFsRootPath = rootPath.makeQualified(LocalFileSystem.NAME, null);
@@ -109,9 +109,11 @@ public abstract class FileContextMainOperationsBaseTest  {
   
   @After
   public void tearDown() throws Exception {
-    boolean del = fc.delete(new Path(fileContextTestHelper.getAbsoluteTestRootPath(fc), new Path("test")), true);
-    assertTrue(del);
-    fc.delete(localFsRootPath, true);
+    if (fc != null) {
+      boolean del = fc.delete(new Path(fileContextTestHelper.getAbsoluteTestRootPath(fc), new Path("test")), true);
+      assertTrue(del);
+      fc.delete(localFsRootPath, true);
+    }
   }
   
   

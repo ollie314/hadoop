@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.ipc;
 
+import com.google.common.base.Supplier;
 import com.google.protobuf.ServiceException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -63,6 +64,7 @@ import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -70,6 +72,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -347,6 +350,10 @@ public class TestRPC extends TestRpcBase {
 
     assertEquals(3, server.getNumReaders());
     assertEquals(200, server.getMaxQueueSize());
+
+    server = newServerBuilder(conf).setQueueSizePerHandler(10)
+        .setNumHandlers(2).setVerbose(false).build();
+    assertEquals(2 * 10, server.getMaxQueueSize());
   }
 
   @Test
@@ -933,6 +940,91 @@ public class TestRPC extends TestRpcBase {
     }
   }
 
+  @Test(timeout=30000)
+  public void testExternalCall() throws Exception {
+    final UserGroupInformation ugi = UserGroupInformation
+        .createUserForTesting("user123", new String[0]);
+    final IOException expectedIOE = new IOException("boom");
+
+    // use 1 handler so the callq can be plugged
+    final Server server = setupTestServer(conf, 1);
+    try {
+      final AtomicBoolean result = new AtomicBoolean();
+
+      ExternalCall<String> remoteUserCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<String>() {
+            @Override
+            public String run() throws Exception {
+              return UserGroupInformation.getCurrentUser().getUserName();
+            }
+          });
+
+      ExternalCall<String> exceptionCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<String>() {
+            @Override
+            public String run() throws Exception {
+              throw expectedIOE;
+            }
+          });
+
+      final CountDownLatch latch = new CountDownLatch(1);
+      final CyclicBarrier barrier = new CyclicBarrier(2);
+
+      ExternalCall<Void> barrierCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<Void>() {
+            @Override
+            public Void run() throws Exception {
+              // notify we are in a handler and then wait to keep the callq
+              // plugged up
+              latch.countDown();
+              barrier.await();
+              return null;
+            }
+          });
+
+      server.queueCall(barrierCall);
+      server.queueCall(exceptionCall);
+      server.queueCall(remoteUserCall);
+
+      // wait for barrier call to enter the handler, check that the other 2
+      // calls are actually queued
+      latch.await();
+      assertEquals(2, server.getCallQueueLen());
+
+      // unplug the callq
+      barrier.await();
+      barrierCall.get();
+
+      // verify correct ugi is used
+      String answer = remoteUserCall.get();
+      assertEquals(ugi.getUserName(), answer);
+
+      try {
+        exceptionCall.get();
+        fail("didn't throw");
+      } catch (ExecutionException ee) {
+        assertTrue((ee.getCause()) instanceof IOException);
+        assertEquals(expectedIOE.getMessage(), ee.getCause().getMessage());
+      }
+    } finally {
+      server.stop();
+    }
+  }
+
+  private <T> ExternalCall<T> newExtCall(final UserGroupInformation ugi,
+      PrivilegedExceptionAction<T> callable) {
+    return new ExternalCall<T>(callable) {
+      @Override
+      public String getProtocol() {
+        return "test";
+      }
+      @Override
+      public UserGroupInformation getRemoteUser() {
+        return ugi;
+      }
+    };
+  }
+
   @Test
   public void testRpcMetrics() throws Exception {
     Server server;
@@ -1037,11 +1129,9 @@ public class TestRPC extends TestRpcBase {
    */
   @Test (timeout=30000)
   public void testClientBackOffByResponseTime() throws Exception {
-    Server server;
     final TestRpcService proxy;
     boolean succeeded = false;
     final int numClients = 1;
-    final int queueSizePerHandler = 3;
 
     GenericTestUtils.setLogLevel(DecayRpcScheduler.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(RPC.LOG, Level.DEBUG);
@@ -1050,28 +1140,9 @@ public class TestRPC extends TestRpcBase {
     final ExecutorService executorService =
         Executors.newFixedThreadPool(numClients);
     conf.setInt(CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
-    final String ns = CommonConfigurationKeys.IPC_NAMESPACE + ".0.";
-    conf.setBoolean(ns + CommonConfigurationKeys.IPC_BACKOFF_ENABLE, true);
-    conf.setStrings(ns + CommonConfigurationKeys.IPC_CALLQUEUE_IMPL_KEY,
-        "org.apache.hadoop.ipc.FairCallQueue");
-    conf.setStrings(ns + CommonConfigurationKeys.IPC_SCHEDULER_IMPL_KEY,
-        "org.apache.hadoop.ipc.DecayRpcScheduler");
-    conf.setInt(ns + CommonConfigurationKeys.IPC_SCHEDULER_PRIORITY_LEVELS_KEY,
-        2);
-    conf.setBoolean(ns +
-        DecayRpcScheduler.IPC_DECAYSCHEDULER_BACKOFF_RESPONSETIME_ENABLE_KEY,
-        true);
-    // set a small thresholds 2s and 4s for level 0 and level 1 for testing
-    conf.set(ns +
-        DecayRpcScheduler.IPC_DECAYSCHEDULER_BACKOFF_RESPONSETIME_THRESHOLDS_KEY
-        , "2s, 4s");
 
-    // Set max queue size to 3 so that 2 calls from the test won't trigger
-    // back off because the queue is full.
-    RPC.Builder builder = newServerBuilder(conf)
-        .setQueueSizePerHandler(queueSizePerHandler).setNumHandlers(1)
-        .setVerbose(true);
-    server = setupTestServer(builder);
+    final String ns = CommonConfigurationKeys.IPC_NAMESPACE + ".0";
+    Server server = setupDecayRpcSchedulerandTestServer(ns + ".");
 
     @SuppressWarnings("unchecked")
     CallQueueManager<Call> spy = spy((CallQueueManager<Call>) Whitebox
@@ -1080,6 +1151,16 @@ public class TestRPC extends TestRpcBase {
 
     Exception lastException = null;
     proxy = getClient(addr, conf);
+
+    MetricsRecordBuilder rb1 =
+        getMetrics("DecayRpcSchedulerMetrics2." + ns);
+    final long beginDecayedCallVolume = MetricsAsserts.getLongCounter(
+        "DecayedCallVolume", rb1);
+    final long beginRawCallVolume = MetricsAsserts.getLongCounter(
+        "CallVolume", rb1);
+    final int beginUniqueCaller = MetricsAsserts.getIntCounter("UniqueCallers",
+        rb1);
+
     try {
       // start a sleep RPC call that sleeps 3s.
       for (int i = 0; i < numClients; i++) {
@@ -1107,6 +1188,41 @@ public class TestRPC extends TestRpcBase {
         } else {
           lastException = unwrapExeption;
         }
+
+        // Lets Metric system update latest metrics
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            MetricsRecordBuilder rb2 =
+              getMetrics("DecayRpcSchedulerMetrics2." + ns);
+            long decayedCallVolume1 = MetricsAsserts.getLongCounter(
+                "DecayedCallVolume", rb2);
+            long rawCallVolume1 = MetricsAsserts.getLongCounter(
+                "CallVolume", rb2);
+            int uniqueCaller1 = MetricsAsserts.getIntCounter(
+                "UniqueCallers", rb2);
+            long callVolumePriority0 = MetricsAsserts.getLongGauge(
+                "Priority.0.CompletedCallVolume", rb2);
+            long callVolumePriority1 = MetricsAsserts.getLongGauge(
+                "Priority.1.CompletedCallVolume", rb2);
+            double avgRespTimePriority0 = MetricsAsserts.getDoubleGauge(
+                "Priority.0.AvgResponseTime", rb2);
+            double avgRespTimePriority1 = MetricsAsserts.getDoubleGauge(
+                "Priority.1.AvgResponseTime", rb2);
+
+            LOG.info("DecayedCallVolume: " + decayedCallVolume1);
+            LOG.info("CallVolume: " + rawCallVolume1);
+            LOG.info("UniqueCaller: " + uniqueCaller1);
+            LOG.info("Priority.0.CompletedCallVolume: " + callVolumePriority0);
+            LOG.info("Priority.1.CompletedCallVolume: " + callVolumePriority1);
+            LOG.info("Priority.0.AvgResponseTime: " + avgRespTimePriority0);
+            LOG.info("Priority.1.AvgResponseTime: " + avgRespTimePriority1);
+
+            return decayedCallVolume1 > beginDecayedCallVolume &&
+                rawCallVolume1 > beginRawCallVolume &&
+                uniqueCaller1 > beginUniqueCaller;
+          }
+        }, 30, 60000);
       }
     } finally {
       executorService.shutdown();
@@ -1116,6 +1232,34 @@ public class TestRPC extends TestRpcBase {
       LOG.error("Last received non-RetriableException:", lastException);
     }
     assertTrue("RetriableException not received", succeeded);
+  }
+
+  private Server setupDecayRpcSchedulerandTestServer(String ns)
+      throws Exception {
+    final int queueSizePerHandler = 3;
+
+    conf.setInt(CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
+    conf.setBoolean(ns + CommonConfigurationKeys.IPC_BACKOFF_ENABLE, true);
+    conf.setStrings(ns + CommonConfigurationKeys.IPC_CALLQUEUE_IMPL_KEY,
+        "org.apache.hadoop.ipc.FairCallQueue");
+    conf.setStrings(ns + CommonConfigurationKeys.IPC_SCHEDULER_IMPL_KEY,
+        "org.apache.hadoop.ipc.DecayRpcScheduler");
+    conf.setInt(ns + CommonConfigurationKeys.IPC_SCHEDULER_PRIORITY_LEVELS_KEY,
+        2);
+    conf.setBoolean(ns +
+            DecayRpcScheduler.IPC_DECAYSCHEDULER_BACKOFF_RESPONSETIME_ENABLE_KEY,
+        true);
+    // set a small thresholds 2s and 4s for level 0 and level 1 for testing
+    conf.set(ns +
+            DecayRpcScheduler.IPC_DECAYSCHEDULER_BACKOFF_RESPONSETIME_THRESHOLDS_KEY
+        , "2s, 4s");
+
+    // Set max queue size to 3 so that 2 calls from the test won't trigger
+    // back off because the queue is full.
+    RPC.Builder builder = newServerBuilder(conf)
+        .setQueueSizePerHandler(queueSizePerHandler).setNumHandlers(1)
+        .setVerbose(true);
+    return setupTestServer(builder);
   }
 
   /**

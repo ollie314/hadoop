@@ -513,7 +513,9 @@ public class CLI extends Configured implements Tool {
   
   /**
    * List the events for the given job
-   * @param jobId the job id for the job's events to list
+   * @param job the job to list
+   * @param fromEventId event id for the job's events to list from
+   * @param numEvents number of events we want to list
    * @throws IOException
    */
   private void listEvents(Job job, int fromEventId, int numEvents)
@@ -666,9 +668,10 @@ public class CLI extends Configured implements Tool {
     for (JobStatus job : jobs) {
       int numUsedSlots = job.getNumUsedSlots();
       int numReservedSlots = job.getNumReservedSlots();
-      int usedMem = job.getUsedMem();
-      int rsvdMem = job.getReservedMem();
-      int neededMem = job.getNeededMem();
+
+      long usedMem = job.getUsedMem();
+      long rsvdMem = job.getReservedMem();
+      long neededMem = job.getNeededMem();
       writer.printf(dataPattern,
           job.getJobID().toString(), job.getState(), job.getStartTime(),
           job.getUsername(), job.getQueue(), 

@@ -19,6 +19,7 @@
 package org.apache.hadoop.ipc;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -32,11 +33,19 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.AtomicDoubleArray;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.metrics2.MetricsCollector;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
+import org.apache.hadoop.metrics2.MetricsSource;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.lib.Interns;
 import org.apache.hadoop.metrics2.util.MBeans;
+import org.apache.hadoop.metrics2.util.Metrics2Util.NameValuePair;
+import org.apache.hadoop.metrics2.util.Metrics2Util.TopN;
 
 import org.codehaus.jackson.map.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
@@ -49,7 +58,8 @@ import org.slf4j.LoggerFactory;
  * for large periods (on the order of seconds), as it offloads work to the
  * decay sweep.
  */
-public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean {
+public class DecayRpcScheduler implements RpcScheduler,
+    DecayRpcSchedulerMXBean, MetricsSource {
   /**
    * Period controls how many milliseconds between each decay sweep.
    */
@@ -107,15 +117,26 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
       IPC_DECAYSCHEDULER_BACKOFF_RESPONSETIME_THRESHOLDS_KEY =
       "decay-scheduler.backoff.responsetime.thresholds";
 
+  // Specifies the top N user's call count and scheduler decision
+  // Metrics2 Source
+  public static final String DECAYSCHEDULER_METRICS_TOP_USER_COUNT =
+      "decay-scheduler.metrics.top.user.count";
+  public static final int DECAYSCHEDULER_METRICS_TOP_USER_COUNT_DEFAULT = 10;
+
   public static final Logger LOG =
       LoggerFactory.getLogger(DecayRpcScheduler.class);
 
-  // Track the number of calls for each schedulable identity
-  private final ConcurrentHashMap<Object, AtomicLong> callCounts =
-    new ConcurrentHashMap<Object, AtomicLong>();
+  // Track the decayed and raw (no decay) number of calls for each schedulable
+  // identity from all previous decay windows: idx 0 for decayed call count and
+  // idx 1 for the raw call count
+  private final ConcurrentHashMap<Object, List<AtomicLong>> callCounts =
+      new ConcurrentHashMap<Object, List<AtomicLong>>();
 
-  // Should be the sum of all AtomicLongs in callCounts
-  private final AtomicLong totalCalls = new AtomicLong();
+  // Should be the sum of all AtomicLongs in decayed callCounts
+  private final AtomicLong totalDecayedCallCount = new AtomicLong();
+  // The sum of all AtomicLongs in raw callCounts
+  private final AtomicLong totalRawCallCount = new AtomicLong();
+
 
   // Track total call count and response time in current decay window
   private final AtomicLongArray responseTimeCountInCurrWindow;
@@ -138,6 +159,9 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
   private final IdentityProvider identityProvider;
   private final boolean backOffByResponseTimeEnabled;
   private final long[] backOffResponseTimeThresholds;
+  private final String namespace;
+  private final int topUsersCount; // e.g., report top 10 users' metrics
+  private static final double PRECISION = 0.0001;
 
   /**
    * This TimerTask will call decayCurrentCounts until
@@ -179,6 +203,7 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
           "at least 1");
     }
     this.numLevels = numLevels;
+    this.namespace = ns;
     this.decayFactor = parseDecayFactor(ns, conf);
     this.decayPeriodMillis = parseDecayPeriodMillis(ns, conf);
     this.identityProvider = this.parseIdentityProvider(ns, conf);
@@ -188,19 +213,26 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
     this.backOffResponseTimeThresholds =
         parseBackOffResponseTimeThreshold(ns, conf, numLevels);
 
-    // Setup delay timer
-    Timer timer = new Timer();
-    DecayTask task = new DecayTask(this, timer);
-    timer.scheduleAtFixedRate(task, decayPeriodMillis, decayPeriodMillis);
-
     // Setup response time metrics
     responseTimeTotalInCurrWindow = new AtomicLongArray(numLevels);
     responseTimeCountInCurrWindow = new AtomicLongArray(numLevels);
     responseTimeAvgInLastWindow = new AtomicDoubleArray(numLevels);
     responseTimeCountInLastWindow = new AtomicLongArray(numLevels);
 
+    topUsersCount =
+        conf.getInt(DECAYSCHEDULER_METRICS_TOP_USER_COUNT,
+            DECAYSCHEDULER_METRICS_TOP_USER_COUNT_DEFAULT);
+    Preconditions.checkArgument(topUsersCount > 0,
+        "the number of top users for scheduler metrics must be at least 1");
+
+    // Setup delay timer
+    Timer timer = new Timer();
+    DecayTask task = new DecayTask(this, timer);
+    timer.scheduleAtFixedRate(task, decayPeriodMillis, decayPeriodMillis);
+
     MetricsProxy prox = MetricsProxy.getInstance(ns, numLevels);
     prox.setDelegate(this);
+    prox.registerMetrics2Source(ns);
   }
 
   // Load configs
@@ -355,19 +387,23 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
    */
   private void decayCurrentCounts() {
     try {
-      long total = 0;
-      Iterator<Map.Entry<Object, AtomicLong>> it =
+      long totalDecayedCount = 0;
+      long totalRawCount = 0;
+      Iterator<Map.Entry<Object, List<AtomicLong>>> it =
           callCounts.entrySet().iterator();
 
       while (it.hasNext()) {
-        Map.Entry<Object, AtomicLong> entry = it.next();
-        AtomicLong count = entry.getValue();
+        Map.Entry<Object, List<AtomicLong>> entry = it.next();
+        AtomicLong decayedCount = entry.getValue().get(0);
+        AtomicLong rawCount = entry.getValue().get(1);
+
 
         // Compute the next value by reducing it by the decayFactor
-        long currentValue = count.get();
+        totalRawCount += rawCount.get();
+        long currentValue = decayedCount.get();
         long nextValue = (long) (currentValue * decayFactor);
-        total += nextValue;
-        count.set(nextValue);
+        totalDecayedCount += nextValue;
+        decayedCount.set(nextValue);
 
         if (nextValue == 0) {
           // We will clean up unused keys here. An interesting optimization
@@ -378,7 +414,8 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
       }
 
       // Update the total so that we remain in sync
-      totalCalls.set(total);
+      totalDecayedCallCount.set(totalDecayedCount);
+      totalRawCallCount.set(totalRawCount);
 
       // Now refresh the cache of scheduling decisions
       recomputeScheduleCache();
@@ -398,9 +435,9 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
   private void recomputeScheduleCache() {
     Map<Object, Integer> nextCache = new HashMap<Object, Integer>();
 
-    for (Map.Entry<Object, AtomicLong> entry : callCounts.entrySet()) {
+    for (Map.Entry<Object, List<AtomicLong>> entry : callCounts.entrySet()) {
       Object id = entry.getKey();
-      AtomicLong value = entry.getValue();
+      AtomicLong value = entry.getValue().get(0);
 
       long snapshot = value.get();
       int computedLevel = computePriorityLevel(snapshot);
@@ -417,27 +454,34 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
    * @param identity the identity of the user to increment
    * @return the value before incrementation
    */
-  private long getAndIncrement(Object identity) throws InterruptedException {
+  private long getAndIncrementCallCounts(Object identity)
+      throws InterruptedException {
     // We will increment the count, or create it if no such count exists
-    AtomicLong count = this.callCounts.get(identity);
+    List<AtomicLong> count = this.callCounts.get(identity);
     if (count == null) {
-      // Create the count since no such count exists.
-      count = new AtomicLong(0);
+      // Create the counts since no such count exists.
+      // idx 0 for decayed call count
+      // idx 1 for the raw call count
+      count = new ArrayList<AtomicLong>(2);
+      count.add(new AtomicLong(0));
+      count.add(new AtomicLong(0));
 
       // Put it in, or get the AtomicInteger that was put in by another thread
-      AtomicLong otherCount = callCounts.putIfAbsent(identity, count);
+      List<AtomicLong> otherCount = callCounts.putIfAbsent(identity, count);
       if (otherCount != null) {
         count = otherCount;
       }
     }
 
     // Update the total
-    totalCalls.getAndIncrement();
+    totalDecayedCallCount.getAndIncrement();
+    totalRawCallCount.getAndIncrement();
 
     // At this point value is guaranteed to be not null. It may however have
     // been clobbered from callCounts. Nonetheless, we return what
     // we have.
-    return count.getAndIncrement();
+    count.get(1).getAndIncrement();
+    return count.get(0).getAndIncrement();
   }
 
   /**
@@ -446,7 +490,7 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
    * @return scheduling decision from 0 to numLevels - 1
    */
   private int computePriorityLevel(long occurrences) {
-    long totalCallSnapshot = totalCalls.get();
+    long totalCallSnapshot = totalDecayedCallCount.get();
 
     double proportion = 0;
     if (totalCallSnapshot > 0) {
@@ -472,7 +516,7 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
    */
   private int cachedOrComputedPriorityLevel(Object identity) {
     try {
-      long occurrences = this.getAndIncrement(identity);
+      long occurrences = this.getAndIncrementCallCounts(identity);
 
       // Try the cache
       Map<Object, Integer> scheduleCache = scheduleCacheRef.get();
@@ -555,7 +599,7 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
     }
   }
 
-  // Update the cached average response time at the end of decay window
+  // Update the cached average response time at the end of the decay window
   void updateAverageResponseTime(boolean enableDecay) {
     for (int i = 0; i < numLevels; i++) {
       double averageResponseTime = 0;
@@ -565,11 +609,13 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
         averageResponseTime = (double) totalResponseTime / responseTimeCount;
       }
       final double lastAvg = responseTimeAvgInLastWindow.get(i);
-      if (enableDecay && lastAvg > 0.0) {
-        final double decayed = decayFactor * lastAvg + averageResponseTime;
-        responseTimeAvgInLastWindow.set(i, decayed);
-      } else {
-        responseTimeAvgInLastWindow.set(i, averageResponseTime);
+      if (lastAvg > PRECISION || averageResponseTime > PRECISION) {
+        if (enableDecay) {
+          final double decayed = decayFactor * lastAvg + averageResponseTime;
+          responseTimeAvgInLastWindow.set(i, decayed);
+        } else {
+          responseTimeAvgInLastWindow.set(i, averageResponseTime);
+        }
       }
       responseTimeCountInLastWindow.set(i, responseTimeCount);
       if (LOG.isDebugEnabled()) {
@@ -599,8 +645,8 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
   public Map<Object, Long> getCallCountSnapshot() {
     HashMap<Object, Long> snapshot = new HashMap<Object, Long>();
 
-    for (Map.Entry<Object, AtomicLong> entry : callCounts.entrySet()) {
-      snapshot.put(entry.getKey(), entry.getValue().get());
+    for (Map.Entry<Object, List<AtomicLong>> entry : callCounts.entrySet()) {
+      snapshot.put(entry.getKey(), entry.getValue().get(0).get());
     }
 
     return Collections.unmodifiableMap(snapshot);
@@ -608,14 +654,15 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
 
   @VisibleForTesting
   public long getTotalCallSnapshot() {
-    return totalCalls.get();
+    return totalDecayedCallCount.get();
   }
 
   /**
    * MetricsProxy is a singleton because we may init multiple schedulers and we
    * want to clean up resources when a new scheduler replaces the old one.
    */
-  private static final class MetricsProxy implements DecayRpcSchedulerMXBean {
+  public static final class MetricsProxy implements DecayRpcSchedulerMXBean,
+      MetricsSource {
     // One singleton per namespace
     private static final HashMap<String, MetricsProxy> INSTANCES =
       new HashMap<String, MetricsProxy>();
@@ -644,6 +691,11 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
 
     public void setDelegate(DecayRpcScheduler obj) {
       this.delegate = new WeakReference<DecayRpcScheduler>(obj);
+    }
+
+    void registerMetrics2Source(String namespace) {
+      final String name = "DecayRpcSchedulerMetrics2." + namespace;
+      DefaultMetricsSystem.instance().register(name, name, this);
     }
 
     @Override
@@ -704,6 +756,14 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
         return scheduler.getResponseTimeCountInLastWindow();
       }
     }
+
+    @Override
+    public void getMetrics(MetricsCollector collector, boolean all) {
+      DecayRpcScheduler scheduler = delegate.get();
+      if (scheduler != null) {
+        scheduler.getMetrics(collector, all);
+      }
+    }
   }
 
   public int getUniqueIdentityCount() {
@@ -711,7 +771,11 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
   }
 
   public long getTotalCallVolume() {
-    return totalCalls.get();
+    return totalDecayedCallCount.get();
+  }
+
+  public long getTotalRawCallVolume() {
+    return totalRawCallCount.get();
   }
 
   public long[] getResponseTimeCountInLastWindow() {
@@ -731,6 +795,95 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
     return ret;
   }
 
+  @Override
+  public void getMetrics(MetricsCollector collector, boolean all) {
+    // Metrics2 interface to act as a Metric source
+    try {
+      MetricsRecordBuilder rb = collector.addRecord(getClass().getName())
+          .setContext(namespace);
+      addDecayedCallVolume(rb);
+      addUniqueIdentityCount(rb);
+      addTopNCallerSummary(rb);
+      addAvgResponseTimePerPriority(rb);
+      addCallVolumePerPriority(rb);
+      addRawCallVolume(rb);
+    } catch (Exception e) {
+      LOG.warn("Exception thrown while metric collection. Exception : "
+          + e.getMessage());
+    }
+  }
+
+  // Key: UniqueCallers
+  private void addUniqueIdentityCount(MetricsRecordBuilder rb) {
+    rb.addCounter(Interns.info("UniqueCallers", "Total unique callers"),
+        getUniqueIdentityCount());
+  }
+
+  // Key: DecayedCallVolume
+  private void addDecayedCallVolume(MetricsRecordBuilder rb) {
+    rb.addCounter(Interns.info("DecayedCallVolume", "Decayed Total " +
+        "incoming Call Volume"), getTotalCallVolume());
+  }
+
+  private void addRawCallVolume(MetricsRecordBuilder rb) {
+    rb.addCounter(Interns.info("CallVolume", "Raw Total " +
+        "incoming Call Volume"), getTotalRawCallVolume());
+  }
+
+  // Key: Priority.0.CompletedCallVolume
+  private void addCallVolumePerPriority(MetricsRecordBuilder rb) {
+    for (int i = 0; i < responseTimeCountInLastWindow.length(); i++) {
+      rb.addGauge(Interns.info("Priority." + i + ".CompletedCallVolume",
+          "Completed Call volume " +
+          "of priority "+ i), responseTimeCountInLastWindow.get(i));
+    }
+  }
+
+  // Key: Priority.0.AvgResponseTime
+  private void addAvgResponseTimePerPriority(MetricsRecordBuilder rb) {
+    for (int i = 0; i < responseTimeAvgInLastWindow.length(); i++) {
+      rb.addGauge(Interns.info("Priority." + i + ".AvgResponseTime", "Average" +
+          " response time of priority " + i),
+          responseTimeAvgInLastWindow.get(i));
+    }
+  }
+
+  // Key: Caller(xyz).Volume and Caller(xyz).Priority
+  private void addTopNCallerSummary(MetricsRecordBuilder rb) {
+    TopN topNCallers = getTopCallers(topUsersCount);
+    Map<Object, Integer> decisions = scheduleCacheRef.get();
+    final int actualCallerCount = topNCallers.size();
+    for (int i = 0; i < actualCallerCount; i++) {
+      NameValuePair entry =  topNCallers.poll();
+      String topCaller = "Caller(" + entry.getName() + ")";
+      String topCallerVolume = topCaller + ".Volume";
+      String topCallerPriority = topCaller + ".Priority";
+      rb.addCounter(Interns.info(topCallerVolume, topCallerVolume),
+          entry.getValue());
+      Integer priority = decisions.get(entry.getName());
+      if (priority != null) {
+        rb.addCounter(Interns.info(topCallerPriority, topCallerPriority),
+            priority);
+      }
+    }
+  }
+
+  // Get the top N callers' raw call count and scheduler decision
+  private TopN getTopCallers(int n) {
+    TopN topNCallers = new TopN(n);
+    Iterator<Map.Entry<Object, List<AtomicLong>>> it =
+        callCounts.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry<Object, List<AtomicLong>> entry = it.next();
+      String caller = entry.getKey().toString();
+      Long count = entry.getValue().get(1).get();
+      if (count > 0) {
+        topNCallers.offer(new NameValuePair(caller, count));
+      }
+    }
+    return topNCallers;
+  }
+
   public String getSchedulingDecisionSummary() {
     Map<Object, Integer> decisions = scheduleCacheRef.get();
     if (decisions == null) {
@@ -748,9 +901,24 @@ public class DecayRpcScheduler implements RpcScheduler, DecayRpcSchedulerMXBean 
   public String getCallVolumeSummary() {
     try {
       ObjectMapper om = new ObjectMapper();
-      return om.writeValueAsString(callCounts);
+      return om.writeValueAsString(getDecayedCallCounts());
     } catch (Exception e) {
       return "Error: " + e.getMessage();
     }
+  }
+
+  private Map<Object, Long> getDecayedCallCounts() {
+    Map<Object, Long> decayedCallCounts = new HashMap<>(callCounts.size());
+    Iterator<Map.Entry<Object, List<AtomicLong>>> it =
+        callCounts.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry<Object, List<AtomicLong>> entry = it.next();
+      Object user = entry.getKey();
+      Long decayedCount = entry.getValue().get(0).get();
+      if (decayedCount > 0) {
+        decayedCallCounts.put(user, decayedCount);
+      }
+    }
+    return decayedCallCounts;
   }
 }

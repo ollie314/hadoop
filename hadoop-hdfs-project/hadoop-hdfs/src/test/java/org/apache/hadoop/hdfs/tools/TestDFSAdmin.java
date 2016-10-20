@@ -17,16 +17,21 @@
  */
 package org.apache.hadoop.hdfs.tools;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 
 import com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.PathUtils;
+import org.apache.hadoop.util.ToolRunner;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -56,28 +61,53 @@ public class TestDFSAdmin {
   private MiniDFSCluster cluster;
   private DFSAdmin admin;
   private DataNode datanode;
+  private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+  private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+  private static final PrintStream OLD_OUT = System.out;
+  private static final PrintStream OLD_ERR = System.err;
 
   @Before
   public void setUp() throws Exception {
     conf = new Configuration();
+    conf.setInt(IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 3);
     restartCluster();
 
     admin = new DFSAdmin();
   }
 
+  private void redirectStream() {
+    System.setOut(new PrintStream(out));
+    System.setErr(new PrintStream(err));
+  }
+
+  private void resetStream() {
+    out.reset();
+    err.reset();
+  }
+
   @After
   public void tearDown() throws Exception {
+    try {
+      System.out.flush();
+      System.err.flush();
+    } finally {
+      System.setOut(OLD_OUT);
+      System.setErr(OLD_ERR);
+    }
+
     if (cluster != null) {
       cluster.shutdown();
       cluster = null;
     }
+
+    resetStream();
   }
 
   private void restartCluster() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
     }
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
     cluster.waitActive();
     datanode = cluster.getDataNodes().get(0);
   }
@@ -85,16 +115,130 @@ public class TestDFSAdmin {
   private List<String> getReconfigureStatus(String nodeType, String address)
       throws IOException {
     ByteArrayOutputStream bufOut = new ByteArrayOutputStream();
-    PrintStream out = new PrintStream(bufOut);
+    PrintStream outStream = new PrintStream(bufOut);
     ByteArrayOutputStream bufErr = new ByteArrayOutputStream();
-    PrintStream err = new PrintStream(bufErr);
-    admin.getReconfigurationStatus(nodeType, address, out, err);
-    Scanner scanner = new Scanner(bufOut.toString());
+    PrintStream errStream = new PrintStream(bufErr);
+    admin.getReconfigurationStatus(nodeType, address, outStream, errStream);
     List<String> outputs = Lists.newArrayList();
-    while (scanner.hasNextLine()) {
-      outputs.add(scanner.nextLine());
-    }
+    scanIntoList(bufOut, outputs);
     return outputs;
+  }
+
+  private static void scanIntoList(
+      final ByteArrayOutputStream baos,
+      final List<String> list) {
+    final Scanner scanner = new Scanner(baos.toString());
+    while (scanner.hasNextLine()) {
+      list.add(scanner.nextLine());
+    }
+    scanner.close();
+  }
+
+  @Test(timeout = 30000)
+  public void testGetDatanodeInfo() throws Exception {
+    redirectStream();
+    final DFSAdmin dfsAdmin = new DFSAdmin(conf);
+
+    for (int i = 0; i < cluster.getDataNodes().size(); i++) {
+      resetStream();
+      final DataNode dn = cluster.getDataNodes().get(i);
+      final String addr = String.format(
+          "%s:%d",
+          dn.getXferAddress().getHostString(),
+          dn.getIpcPort());
+      final int ret = ToolRunner.run(dfsAdmin,
+          new String[]{"-getDatanodeInfo", addr});
+      assertEquals(0, ret);
+
+      /* collect outputs */
+      final List<String> outs = Lists.newArrayList();
+      scanIntoList(out, outs);
+      /* verify results */
+      assertEquals(
+          "One line per DataNode like: Uptime: XXX, Software version: x.y.z,"
+              + " Config version: core-x.y.z,hdfs-x",
+          1, outs.size());
+      assertThat(outs.get(0),
+          is(allOf(containsString("Uptime:"),
+              containsString("Software version"),
+              containsString("Config version"))));
+    }
+  }
+
+  /**
+   * Test that if datanode is not reachable, some DFSAdmin commands will fail
+   * elegantly with non-zero ret error code along with exception error message.
+   */
+  @Test(timeout = 60000)
+  public void testDFSAdminUnreachableDatanode() throws Exception {
+    redirectStream();
+    final DFSAdmin dfsAdmin = new DFSAdmin(conf);
+    for (String command : new String[]{"-getDatanodeInfo",
+        "-evictWriters", "-getBalancerBandwidth"}) {
+      // Connecting to Xfer port instead of IPC port will get
+      // Datanode unreachable. java.io.EOFException
+      final String dnDataAddr = datanode.getXferAddress().getHostString() + ":"
+          + datanode.getXferPort();
+      resetStream();
+      final List<String> outs = Lists.newArrayList();
+      final int ret = ToolRunner.run(dfsAdmin,
+          new String[]{command, dnDataAddr});
+      assertEquals(-1, ret);
+
+      scanIntoList(out, outs);
+      assertTrue("Unexpected " + command + " stdout: " + out, outs.isEmpty());
+      assertTrue("Unexpected " + command + " stderr: " + err,
+          err.toString().contains("Exception"));
+    }
+  }
+
+  @Test(timeout = 30000)
+  public void testPrintTopology() throws Exception {
+    redirectStream();
+
+    /* init conf */
+    final Configuration dfsConf = new HdfsConfiguration();
+    final File baseDir = new File(
+        PathUtils.getTestDir(getClass()),
+        GenericTestUtils.getMethodName());
+    dfsConf.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, baseDir.getAbsolutePath());
+
+    final int numDn = 4;
+    final String[] racks = {
+        "/d1/r1", "/d1/r2",
+        "/d2/r1", "/d2/r2"};
+
+    /* init cluster using topology */
+    try (MiniDFSCluster miniCluster = new MiniDFSCluster.Builder(dfsConf)
+        .numDataNodes(numDn).racks(racks).build()) {
+
+      miniCluster.waitActive();
+      assertEquals(numDn, miniCluster.getDataNodes().size());
+      final DFSAdmin dfsAdmin = new DFSAdmin(dfsConf);
+
+      resetStream();
+      final int ret = ToolRunner.run(dfsAdmin, new String[] {"-printTopology"});
+
+      /* collect outputs */
+      final List<String> outs = Lists.newArrayList();
+      scanIntoList(out, outs);
+
+      /* verify results */
+      assertEquals(0, ret);
+      assertEquals(
+          "There should be three lines per Datanode: the 1st line is"
+              + " rack info, 2nd node info, 3rd empty line. The total"
+              + " should be as a result of 3 * numDn.",
+          12, outs.size());
+      assertThat(outs.get(0),
+          is(allOf(containsString("Rack:"), containsString("/d1/r1"))));
+      assertThat(outs.get(3),
+          is(allOf(containsString("Rack:"), containsString("/d1/r2"))));
+      assertThat(outs.get(6),
+          is(allOf(containsString("Rack:"), containsString("/d2/r1"))));
+      assertThat(outs.get(9),
+          is(allOf(containsString("Rack:"), containsString("/d2/r2"))));
+    }
   }
 
   /**
@@ -189,15 +333,12 @@ public class TestDFSAdmin {
       String nodeType, String address)
       throws IOException {
     ByteArrayOutputStream bufOut = new ByteArrayOutputStream();
-    PrintStream out = new PrintStream(bufOut);
+    PrintStream outStream = new PrintStream(bufOut);
     ByteArrayOutputStream bufErr = new ByteArrayOutputStream();
-    PrintStream err = new PrintStream(bufErr);
-    admin.getReconfigurableProperties(nodeType, address, out, err);
-    Scanner scanner = new Scanner(bufOut.toString());
+    PrintStream errStream = new PrintStream(bufErr);
+    admin.getReconfigurableProperties(nodeType, address, outStream, errStream);
     List<String> outputs = Lists.newArrayList();
-    while (scanner.hasNextLine()) {
-      outputs.add(scanner.nextLine());
-    }
+    scanIntoList(bufOut, outputs);
     return outputs;
   }
 

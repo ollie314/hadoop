@@ -555,6 +555,14 @@
   </property>
 
   <property>
+    <description>The time in seconds between full compactions of the leveldb
+    database. Setting the interval to zero disables the full compaction
+    cycles.</description>
+    <name>yarn.resourcemanager.leveldb-state-store.compaction-interval-secs</name>
+    <value>3600</value>
+  </property>
+
+  <property>
     <description>Enable RM high-availability. When enabled,
       (1) The RM starts in the Standby mode by default, and transitions to
       the Active mode when prompted to.
@@ -1625,6 +1633,14 @@
   </property>
 
   <property>
+    <description>The time in seconds between full compactions of the NM state
+    database. Setting the interval to zero disables the full compaction
+    cycles.</description>
+    <name>yarn.nodemanager.recovery.compaction-interval-secs</name>
+    <value>3600</value>
+  </property>
+
+  <property>
     <description>Whether the nodemanager is running under supervision. A
       nodemanager that supports recovery and is running under supervision
       will not try to cleanup containers as it exits with the assumption
@@ -2055,6 +2071,17 @@
       Read cache size for the leveldb cache storage in ATS v1.5 plugin storage.
     </description>
     <value>10485760</value>
+  </property>
+
+  <property>
+    <name>yarn.timeline-service.entity-group-fs-store.app-cache-size</name>
+    <description>
+      Size of the reader cache for ATS v1.5 reader. This value controls how many
+      entity groups the ATS v1.5 server should cache. If the number of active
+      read entity groups is greater than the number of caches items, some reads
+      may return empty data. This value must be greater than 0.
+    </description>
+    <value>10</value>
   </property>
 
   <property>
@@ -2575,25 +2602,6 @@
     </description>
     <name>yarn.nodemanager.amrmproxy.interceptor-class.pipeline</name>
     <value>org.apache.hadoop.yarn.server.nodemanager.amrmproxy.DefaultRequestInterceptor</value>
-  </property>
-
- <property>
-    <description>
-    Enable/disable blacklisting of hosts for AM based on AM failures on those
-    hosts.
-    </description>
-    <name>yarn.am.blacklisting.enabled</name>
-    <value>true</value>
-  </property>
-
-  <property>
-    <description>
-    Threshold of ratio number of NodeManager hosts that are allowed to be
-    blacklisted for AM. Beyond this ratio there is no blacklisting to avoid
-    danger of blacklisting the entire cluster.
-    </description>
-    <name>yarn.am.blacklisting.disable-failure-threshold</name>
-    <value>0.8f</value>
   </property>
 
   <property>

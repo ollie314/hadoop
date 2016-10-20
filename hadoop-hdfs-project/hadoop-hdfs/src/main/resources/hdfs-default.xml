@@ -321,6 +321,11 @@
   <name>dfs.datanode.du.reserved</name>
   <value>0</value>
   <description>Reserved space in bytes per volume. Always leave this much space free for non dfs use.
+      Specific storage type based reservation is also supported. The property can be followed with
+      corresponding storage types ([ssd]/[disk]/[archive]/[ram_disk]) for cluster with heterogeneous storage.
+      For example, reserved space for RAM_DISK storage can be configured using property
+      'dfs.datanode.du.reserved.ram_disk'. If specific storage type reservation is not configured
+      then dfs.datanode.du.reserved will be used.
   </description>
 </property>
 
@@ -856,7 +861,7 @@
 
 <property>
   <name>dfs.datanode.balance.bandwidthPerSec</name>
-  <value>1048576</value>
+  <value>10m</value>
   <description>
         Specifies the maximum amount of bandwidth that each datanode
         can utilize for the balancing purpose in term of
@@ -1529,7 +1534,7 @@
   <value></value>
   <description>
     The NameNode service principal. This is typically set to
-    nn/_HOST@REALM.TLD. Each NameNode will subsitute _HOST with its
+    nn/_HOST@REALM.TLD. Each NameNode will substitute _HOST with its
     own fully qualified hostname at startup. The _HOST placeholder
     allows using the same configuration setting on both NameNodes
     in an HA setup.
@@ -1551,7 +1556,7 @@
   <value></value>
   <description>
     The DataNode service principal. This is typically set to
-    dn/_HOST@REALM.TLD. Each DataNode will subsitute _HOST with its
+    dn/_HOST@REALM.TLD. Each DataNode will substitute _HOST with its
     own fully qualified hostname at startup. The _HOST placeholder
     allows using the same configuration setting on all DataNodes.
   </description>
@@ -1572,7 +1577,7 @@
   <value></value>
   <description>
     The JournalNode service principal. This is typically set to
-    jn/_HOST@REALM.TLD. Each JournalNode will subsitute _HOST with its
+    jn/_HOST@REALM.TLD. Each JournalNode will substitute _HOST with its
     own fully qualified hostname at startup. The _HOST placeholder
     allows using the same configuration setting on all JournalNodes.
   </description>
@@ -2590,6 +2595,42 @@
 </property>
 
 <property>
+  <name>dfs.namenode.lease-recheck-interval-ms</name>
+  <value>2000</value>
+  <description>During the release of lease a lock is hold that make any
+    operations on the namenode stuck. In order to not block them during
+    a too long duration we stop releasing lease after this max lock limit.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.max-lock-hold-to-release-lease-ms</name>
+  <value>25</value>
+  <description>During the release of lease a lock is hold that make any
+    operations on the namenode stuck. In order to not block them during
+    a too long duration we stop releasing lease after this max lock limit.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.write-lock-reporting-threshold-ms</name>
+  <value>1000</value>
+  <description>When a write lock is held on the namenode for a long time,
+    this will be logged as the lock is released. This sets how long the
+    lock must be held for logging to occur.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.read-lock-reporting-threshold-ms</name>
+  <value>5000</value>
+  <description>When a read lock is held on the namenode for a long time,
+    this will be logged as the lock is released. This sets how long the
+    lock must be held for logging to occur.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.startup.delay.block.deletion.sec</name>
   <value>0</value>
   <description>The delay in seconds at which we will pause the blocks deletion
@@ -2673,14 +2714,6 @@
   <description>The number of threads to use when creating hard links from
     current to previous blocks during upgrade of a DataNode to block ID-based
     block layout (see HDFS-6482 for details on the layout).</description>
-</property>
-
-<property>
-  <name>dfs.encryption.key.provider.uri</name>
-  <description>
-    The KeyProvider to use when interacting with encryption keys used
-    when reading and writing to an encryption zone.
-  </description>
 </property>
 
 <property>
@@ -2881,6 +2914,30 @@
   </description>
 </property>
 
+  <property>
+    <name>dfs.xframe.enabled</name>
+    <value>true</value>
+    <description>
+      If true, then enables protection against clickjacking by returning
+      X_FRAME_OPTIONS header value set to SAMEORIGIN.
+      Clickjacking protection prevents an attacker from using transparent or
+      opaque layers to trick a user into clicking on a button
+      or link on another page.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.xframe.value</name>
+    <value>SAMEORIGIN</value>
+    <description>
+      This configration value allows user to specify the value for the
+      X-FRAME-OPTIONS. The possible values for this field are
+      DENY, SAMEORIGIN and ALLOW-FROM. Any other value will throw an
+      exception when namenode and datanodes are starting up.
+    </description>
+  </property>
+
+
 <property>
   <name>dfs.http.client.retry.policy.enabled</name>
   <value>false</value>
@@ -2942,4 +2999,65 @@
     retries or failovers for WebHDFS client.
   </description>
 </property>
+  <property>
+    <name>dfs.balancer.keytab.enabled</name>
+    <value>false</value>
+    <description>
+      Set to true to enable login using a keytab for Kerberized Hadoop.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.address</name>
+    <value>0.0.0.0:0</value>
+    <description>
+      The hostname used for a keytab based Kerberos login. Keytab based login
+      can be enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.keytab.file</name>
+    <value></value>
+    <description>
+      The keytab file used by the Balancer to login as its
+      service principal. The principal name is configured with
+      dfs.balancer.kerberos.principal. Keytab based login can be
+      enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.kerberos.principal</name>
+    <value></value>
+    <description>
+      The Balancer principal. This is typically set to
+      balancer/_HOST@REALM.TLD. The Balancer will substitute _HOST with its
+      own fully qualified hostname at startup. The _HOST placeholder
+      allows using the same configuration setting on different servers.
+      Keytab based login can be enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+<property>
+  <name>dfs.lock.suppress.warning.interval</name>
+  <value>10s</value>
+  <description>Instrumentation reporting long critical sections will suppress
+    consecutive warnings within this interval.</description>
+</property>
+
+  <property>
+    <name>dfs.webhdfs.use.ipc.callq</name>
+    <value>true</value>
+    <description>Enables routing of webhdfs calls through rpc
+      call queue</description>
+  </property>
+
+  <property>
+    <name>httpfs.buffer.size</name>
+    <value>4096</value>
+    <description>
+    The size buffer to be used when creating or opening httpfs filesystem IO stream.
+    </description>
+  </property>
 </configuration>

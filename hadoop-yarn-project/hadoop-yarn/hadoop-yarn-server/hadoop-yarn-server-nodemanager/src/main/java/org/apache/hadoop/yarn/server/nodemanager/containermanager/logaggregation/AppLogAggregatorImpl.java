@@ -147,7 +147,7 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
     this.conf = conf;
     this.delService = deletionService;
     this.appId = appId;
-    this.applicationId = ConverterUtils.toString(appId);
+    this.applicationId = appId.toString();
     this.userUgi = userUgi;
     this.dirsHandler = dirsHandler;
     this.remoteNodeLogFileForApp = remoteNodeLogFileForApp;
@@ -348,7 +348,8 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
           containerLogAggregators.put(container, aggregator);
         }
         Set<Path> uploadedFilePathsInThisCycle =
-            aggregator.doContainerLogAggregation(writer, appFinished);
+            aggregator.doContainerLogAggregation(writer, appFinished,
+            finishedContainers.contains(container));
         if (uploadedFilePathsInThisCycle.size() > 0) {
           uploadedLogsInThisCycle = true;
           this.delService.delete(this.userUgi.getShortUserName(), null,
@@ -501,6 +502,7 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
     }
   }
 
+  @SuppressWarnings("unchecked")
   @Override
   public void run() {
     try {
@@ -513,6 +515,9 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
     } finally {
       if (!this.appAggregationFinished.get()) {
         LOG.warn("Aggregation did not complete for application " + appId);
+        this.dispatcher.getEventHandler().handle(
+            new ApplicationEvent(this.appId,
+                ApplicationEventType.APPLICATION_LOG_HANDLING_FAILED));
       }
       this.appAggregationFinished.set(true);
     }
@@ -646,15 +651,15 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
     }
 
     public Set<Path> doContainerLogAggregation(LogWriter writer,
-        boolean appFinished) {
+        boolean appFinished, boolean containerFinished) {
       LOG.info("Uploading logs for container " + containerId
           + ". Current good log dirs are "
           + StringUtils.join(",", dirsHandler.getLogDirsForRead()));
       final LogKey logKey = new LogKey(containerId);
       final LogValue logValue =
           new LogValue(dirsHandler.getLogDirsForRead(), containerId,
-            userUgi.getShortUserName(), logAggregationContext,
-            this.uploadedFileMeta, appFinished);
+              userUgi.getShortUserName(), logAggregationContext,
+              this.uploadedFileMeta, appFinished, containerFinished);
       try {
         writer.append(logKey, logValue);
       } catch (Exception e) {

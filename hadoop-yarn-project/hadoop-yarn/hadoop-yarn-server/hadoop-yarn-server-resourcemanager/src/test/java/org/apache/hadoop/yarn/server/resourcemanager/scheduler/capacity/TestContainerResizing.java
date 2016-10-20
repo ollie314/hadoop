@@ -30,10 +30,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.ContainerResourceChangeRequest;
+import org.apache.hadoop.yarn.api.records.ContainerUpdateType;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.UpdateContainerRequest;
+import org.apache.hadoop.yarn.api.records.UpdatedContainer;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
@@ -84,7 +86,7 @@ public class TestContainerResizing {
 
     @Override
     protected void decreaseContainers(
-        List<ContainerResourceChangeRequest> decreaseRequests,
+        List<UpdateContainerRequest> decreaseRequests,
         SchedulerApplicationAttempt attempt) {
       try {
         Thread.sleep(1000);
@@ -138,16 +140,17 @@ public class TestContainerResizing {
     sentRMContainerLaunched(rm1, containerId1);
     // am1 asks to change its AM container from 1GB to 3GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId1, Resources.createResource(3 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId1,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(3 * GB))));
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
         rm1, app1.getApplicationId());
 
     checkPendingResource(rm1, "default", 2 * GB, null);
     Assert.assertEquals(2 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -157,7 +160,7 @@ public class TestContainerResizing {
     // Pending resource should be deducted
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     verifyContainerIncreased(am1.allocate(null, null), containerId1, 3 * GB);
     verifyAvailableResourceOfSchedulerNode(rm1, nm1.getNodeId(), 17 * GB);
@@ -188,21 +191,23 @@ public class TestContainerResizing {
 
     checkUsedResource(rm1, "default", 3 * GB, null);
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     ContainerId containerId1 =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
     sentRMContainerLaunched(rm1, containerId1);
 
     // am1 asks to change its AM container from 1GB to 3GB
-    AllocateResponse response = am1.sendContainerResizingRequest(null, Arrays
-        .asList(ContainerResourceChangeRequest
-            .newInstance(containerId1, Resources.createResource(1 * GB))));
+    AllocateResponse response = am1.sendContainerResizingRequest(Arrays
+        .asList(UpdateContainerRequest
+            .newInstance(0, containerId1,
+                ContainerUpdateType.DECREASE_RESOURCE,
+                Resources.createResource(1 * GB))));
 
     verifyContainerDecreased(response, containerId1, 1 * GB);
     checkUsedResource(rm1, "default", 1 * GB, null);
     Assert.assertEquals(1 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     // Check if decreased containers added to RMNode
     RMNodeImpl rmNode =
@@ -266,13 +271,14 @@ public class TestContainerResizing {
 
     // am1 asks to change its AM container from 1GB to 3GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId1, Resources.createResource(7 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId1,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(7 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -284,21 +290,21 @@ public class TestContainerResizing {
     /* Check reservation statuses */
     // Increase request should be reserved
     Assert.assertTrue(rmContainer1.hasIncreaseReservation());
-    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemory());
+    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemorySize());
     Assert.assertFalse(app.getReservedContainers().isEmpty());
     Assert.assertNotNull(cs.getNode(nm1.getNodeId()).getReservedContainer());
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 9 * GB, null);
     Assert.assertEquals(9 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
     // Complete one container and do another allocation
     am1.allocate(null, Arrays.asList(containerId2));
@@ -315,15 +321,15 @@ public class TestContainerResizing {
     // Pending resource will be changed since it's satisfied
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 7 * GB, null);
     Assert.assertEquals(7 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(7 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     verifyAvailableResourceOfSchedulerNode(rm1, nm1.getNodeId(), 1 * GB);
 
     rm1.close();
@@ -367,13 +373,14 @@ public class TestContainerResizing {
     // am1 asks to change container2 from 2GB to 8GB, which will exceed user
     // limit
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId2, Resources.createResource(8 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId2,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(8 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -390,15 +397,15 @@ public class TestContainerResizing {
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will *NOT* be updated
     checkUsedResource(rm1, "default", 3 * GB, null);
     Assert.assertEquals(3 * GB, ((LeafQueue) cs.getQueue("default"))
-            .getUser("user").getUsed().getMemory());
+            .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     rm1.close();
   }
 
@@ -447,13 +454,14 @@ public class TestContainerResizing {
 
     // am1 asks to change its AM container from 1GB to 3GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId1, Resources.createResource(7 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId1,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(7 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -465,21 +473,21 @@ public class TestContainerResizing {
     /* Check reservation statuses */
     // Increase request should be reserved
     Assert.assertTrue(rmContainer1.hasIncreaseReservation());
-    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemory());
+    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemorySize());
     Assert.assertFalse(app.getReservedContainers().isEmpty());
     Assert.assertNotNull(cs.getNode(nm1.getNodeId()).getReservedContainer());
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 9 * GB, null);
     Assert.assertEquals(9 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
     // Complete one container and cancel increase request (via send a increase
     // request, make target_capacity=existing_capacity)
@@ -487,9 +495,10 @@ public class TestContainerResizing {
     // am1 asks to change its AM container from 1G to 1G (cancel the increase
     // request actually)
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId1, Resources.createResource(1 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId1,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(1 * GB))));
     // Trigger a node heartbeat..
     cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
     
@@ -501,15 +510,15 @@ public class TestContainerResizing {
     // Pending resource will be changed since it's satisfied
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 1 * GB, null);
     Assert.assertEquals(1 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(1 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -559,13 +568,14 @@ public class TestContainerResizing {
 
     // am1 asks to change its AM container from 2GB to 8GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId1, Resources.createResource(8 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId1,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(8 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -577,29 +587,31 @@ public class TestContainerResizing {
     /* Check reservation statuses */
     // Increase request should be reserved
     Assert.assertTrue(rmContainer1.hasIncreaseReservation());
-    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemory());
+    Assert.assertEquals(6 * GB, rmContainer1.getReservedResource().getMemorySize());
     Assert.assertFalse(app.getReservedContainers().isEmpty());
     Assert.assertNotNull(cs.getNode(nm1.getNodeId()).getReservedContainer());
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 10 * GB, null);
     Assert.assertEquals(10 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(4 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
     // Complete one container and cancel increase request (via send a increase
     // request, make target_capacity=existing_capacity)
     am1.allocate(null, Arrays.asList(containerId2));
     // am1 asks to change its AM container from 2G to 1G (decrease)
-    am1.sendContainerResizingRequest(null, Arrays.asList(
-        ContainerResourceChangeRequest
-            .newInstance(containerId1, Resources.createResource(1 * GB))));
+    am1.sendContainerResizingRequest(Arrays.asList(
+        UpdateContainerRequest
+            .newInstance(0, containerId1,
+                ContainerUpdateType.INCREASE_RESOURCE,
+                Resources.createResource(1 * GB))));
     // Trigger a node heartbeat..
     cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
     
@@ -611,15 +623,15 @@ public class TestContainerResizing {
     // Pending resource will be changed since it's satisfied
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 1 * GB, null);
     Assert.assertEquals(1 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(1 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -667,13 +679,14 @@ public class TestContainerResizing {
 
     // am1 asks to change its AM container from 2GB to 8GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId2, Resources.createResource(8 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId2,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(8 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -685,21 +698,21 @@ public class TestContainerResizing {
     /* Check reservation statuses */
     // Increase request should be reserved
     Assert.assertTrue(rmContainer2.hasIncreaseReservation());
-    Assert.assertEquals(6 * GB, rmContainer2.getReservedResource().getMemory());
+    Assert.assertEquals(6 * GB, rmContainer2.getReservedResource().getMemorySize());
     Assert.assertFalse(app.getReservedContainers().isEmpty());
     Assert.assertNotNull(cs.getNode(nm1.getNodeId()).getReservedContainer());
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 9 * GB, null);
     Assert.assertEquals(9 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
     // Complete container2, container will be unreserved and completed
     am1.allocate(null, Arrays.asList(containerId2));
@@ -712,15 +725,15 @@ public class TestContainerResizing {
     // Pending resource will be changed since it's satisfied
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 1 * GB, null);
     Assert.assertEquals(1 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(1 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -765,13 +778,14 @@ public class TestContainerResizing {
 
     // am1 asks to change its AM container from 2GB to 8GB
     am1.sendContainerResizingRequest(Arrays.asList(
-            ContainerResourceChangeRequest
-                .newInstance(containerId2, Resources.createResource(8 * GB))),
-        null);
+            UpdateContainerRequest
+                .newInstance(0, containerId2,
+                    ContainerUpdateType.INCREASE_RESOURCE,
+                    Resources.createResource(8 * GB))));
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // NM1 do 1 heartbeats
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -783,21 +797,21 @@ public class TestContainerResizing {
     /* Check reservation statuses */
     // Increase request should be reserved
     Assert.assertTrue(rmContainer2.hasIncreaseReservation());
-    Assert.assertEquals(6 * GB, rmContainer2.getReservedResource().getMemory());
+    Assert.assertEquals(6 * GB, rmContainer2.getReservedResource().getMemorySize());
     Assert.assertFalse(app.getReservedContainers().isEmpty());
     Assert.assertNotNull(cs.getNode(nm1.getNodeId()).getReservedContainer());
     // Pending resource will not be changed since it's not satisfied
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 9 * GB, null);
     Assert.assertEquals(9 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
     // Kill the application
     cs.handle(new AppAttemptRemovedSchedulerEvent(am1.getApplicationAttemptId(),
@@ -811,15 +825,15 @@ public class TestContainerResizing {
     // Pending resource will be changed since it's satisfied
     checkPendingResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 0 * GB, null);
     Assert.assertEquals(0 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -883,18 +897,20 @@ public class TestContainerResizing {
     allocateAndLaunchContainers(am1, nm1, rm1, 2, 1 * GB, 4, 6);
 
     // am1 asks to change its container[2-7] from 1G to 2G
-    List<ContainerResourceChangeRequest> increaseRequests = new ArrayList<>();
+    List<UpdateContainerRequest> increaseRequests = new ArrayList<>();
     for (int cId = 2; cId <= 7; cId++) {
       ContainerId containerId =
           ContainerId.newContainerId(am1.getApplicationAttemptId(), cId);
-      increaseRequests.add(ContainerResourceChangeRequest
-          .newInstance(containerId, Resources.createResource(2 * GB)));
+      increaseRequests.add(UpdateContainerRequest
+          .newInstance(0, containerId,
+              ContainerUpdateType.INCREASE_RESOURCE,
+              Resources.createResource(2 * GB)));
     }
-    am1.sendContainerResizingRequest(increaseRequests, null);
+    am1.sendContainerResizingRequest(increaseRequests);
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // Get rmNode1
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -904,7 +920,7 @@ public class TestContainerResizing {
     // earlier allocated)
     cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
     AllocateResponse allocateResponse = am1.allocate(null, null);
-    Assert.assertEquals(3, allocateResponse.getIncreasedContainers().size());
+    Assert.assertEquals(3, allocateResponse.getUpdatedContainers().size());
     verifyContainerIncreased(allocateResponse,
         ContainerId.newContainerId(attemptId, 4), 2 * GB);
     verifyContainerIncreased(allocateResponse,
@@ -916,15 +932,15 @@ public class TestContainerResizing {
     // There're still 3 pending increase requests
     checkPendingResource(rm1, "default", 3 * GB, null);
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 10 * GB, null);
     Assert.assertEquals(10 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(10 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -964,18 +980,20 @@ public class TestContainerResizing {
     allocateAndLaunchContainers(am1, nm1, rm1, 2, 1 * GB, 4, 6);
 
     // am1 asks to change its container[2-7] from 1G to 2G
-    List<ContainerResourceChangeRequest> increaseRequests = new ArrayList<>();
+    List<UpdateContainerRequest> increaseRequests = new ArrayList<>();
     for (int cId = 2; cId <= 7; cId++) {
       ContainerId containerId =
           ContainerId.newContainerId(am1.getApplicationAttemptId(), cId);
-      increaseRequests.add(ContainerResourceChangeRequest
-          .newInstance(containerId, Resources.createResource(2 * GB)));
+      increaseRequests.add(UpdateContainerRequest
+          .newInstance(0, containerId,
+              ContainerUpdateType.INCREASE_RESOURCE,
+              Resources.createResource(2 * GB)));
     }
-    am1.sendContainerResizingRequest(increaseRequests, null);
+    am1.sendContainerResizingRequest(increaseRequests);
 
     checkPendingResource(rm1, "default", 6 * GB, null);
     Assert.assertEquals(6 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
 
     // Get rmNode1
     CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
@@ -985,7 +1003,7 @@ public class TestContainerResizing {
     // earlier allocated)
     cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
     AllocateResponse allocateResponse = am1.allocate(null, null);
-    Assert.assertEquals(3, allocateResponse.getIncreasedContainers().size());
+    Assert.assertEquals(3, allocateResponse.getUpdatedContainers().size());
     verifyContainerIncreased(allocateResponse,
         ContainerId.newContainerId(attemptId, 4), 2 * GB);
     verifyContainerIncreased(allocateResponse,
@@ -997,15 +1015,15 @@ public class TestContainerResizing {
     // There're still 3 pending increase requests
     checkPendingResource(rm1, "default", 3 * GB, null);
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getPending().getMemory());
+        app.getAppAttemptResourceUsage().getPending().getMemorySize());
     // Queue/user/application's usage will be updated
     checkUsedResource(rm1, "default", 10 * GB, null);
     Assert.assertEquals(10 * GB, ((LeafQueue) cs.getQueue("default"))
-        .getUser("user").getUsed().getMemory());
+        .getUser("user").getUsed().getMemorySize());
     Assert.assertEquals(0 * GB,
-        app.getAppAttemptResourceUsage().getReserved().getMemory());
+        app.getAppAttemptResourceUsage().getReserved().getMemorySize());
     Assert.assertEquals(10 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
 
     rm1.close();
   }
@@ -1033,7 +1051,7 @@ public class TestContainerResizing {
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
         rm, app1.getApplicationId());
     Assert.assertEquals(3 * GB,
-        app.getAppAttemptResourceUsage().getUsed().getMemory());
+        app.getAppAttemptResourceUsage().getUsed().getMemorySize());
     // making sure container is launched
     ContainerId containerId1 =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
@@ -1046,9 +1064,11 @@ public class TestContainerResizing {
     nm.nodeHeartbeat(true);
     // *In the mean time*, am1 asks to decrease its AM container resource from
     // 3GB to 1GB
-    AllocateResponse response = am1.sendContainerResizingRequest(null,
-        Collections.singletonList(ContainerResourceChangeRequest
-            .newInstance(containerId1, Resources.createResource(GB))));
+    AllocateResponse response = am1.sendContainerResizingRequest(
+        Collections.singletonList(UpdateContainerRequest
+            .newInstance(0, containerId1,
+                ContainerUpdateType.DECREASE_RESOURCE,
+                Resources.createResource(GB))));
     // verify that the containe resource is decreased
     verifyContainerDecreased(response, containerId1, GB);
 
@@ -1062,7 +1082,7 @@ public class TestContainerResizing {
     Assert.assertEquals(memory,
         queue.getQueueResourceUsage()
             .getPending(label == null ? RMNodeLabelsManager.NO_LABEL : label)
-            .getMemory());
+            .getMemorySize());
   }
 
   private void checkUsedResource(MockRM rm, String queueName, int memory,
@@ -1072,17 +1092,21 @@ public class TestContainerResizing {
     Assert.assertEquals(memory,
         queue.getQueueResourceUsage()
             .getUsed(label == null ? RMNodeLabelsManager.NO_LABEL : label)
-            .getMemory());
+            .getMemorySize());
   }
 
   private void verifyContainerIncreased(AllocateResponse response,
       ContainerId containerId, int mem) {
-    List<Container> increasedContainers = response.getIncreasedContainers();
+    List<UpdatedContainer> increasedContainers =
+        response.getUpdatedContainers();
     boolean found = false;
-    for (Container c : increasedContainers) {
-      if (c.getId().equals(containerId)) {
+    for (UpdatedContainer c : increasedContainers) {
+      if (c.getContainer().getId().equals(containerId)) {
         found = true;
-        Assert.assertEquals(mem, c.getResource().getMemory());
+        Assert.assertEquals(ContainerUpdateType.INCREASE_RESOURCE,
+            c.getUpdateType());
+        Assert.assertEquals(mem,
+            c.getContainer().getResource().getMemorySize());
       }
     }
     if (!found) {
@@ -1092,12 +1116,16 @@ public class TestContainerResizing {
 
   private void verifyContainerDecreased(AllocateResponse response,
       ContainerId containerId, int mem) {
-    List<Container> decreasedContainers = response.getDecreasedContainers();
+    List<UpdatedContainer> decreasedContainers =
+        response.getUpdatedContainers();
     boolean found = false;
-    for (Container c : decreasedContainers) {
-      if (c.getId().equals(containerId)) {
+    for (UpdatedContainer c : decreasedContainers) {
+      if (c.getContainer().getId().equals(containerId)) {
         found = true;
-        Assert.assertEquals(mem, c.getResource().getMemory());
+        Assert.assertEquals(ContainerUpdateType.DECREASE_RESOURCE,
+            c.getUpdateType());
+        Assert.assertEquals(mem,
+            c.getContainer().getResource().getMemorySize());
       }
     }
     if (!found) {
@@ -1120,7 +1148,7 @@ public class TestContainerResizing {
       int expectedMemory) {
     CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
     SchedulerNode node = cs.getNode(nodeId);
-    Assert
-        .assertEquals(expectedMemory, node.getAvailableResource().getMemory());
+    Assert.assertEquals(expectedMemory,
+        node.getAvailableResource().getMemorySize());
   }
 }

@@ -263,7 +263,7 @@ class Fetcher<K,V> extends Thread {
     DataInputStream input = null;
 
     try {
-      setupConnectionsWithRetry(host, remaining, url);
+      setupConnectionsWithRetry(url);
       if (stopped) {
         abortConnect(host, remaining);
       } else {
@@ -374,9 +374,8 @@ class Fetcher<K,V> extends Thread {
     }
   }
 
-  private void setupConnectionsWithRetry(MapHost host,
-      Set<TaskAttemptID> remaining, URL url) throws IOException {
-    openConnectionWithRetry(host, remaining, url);
+  private void setupConnectionsWithRetry(URL url) throws IOException {
+    openConnectionWithRetry(url);
     if (stopped) {
       return;
     }
@@ -396,8 +395,7 @@ class Fetcher<K,V> extends Thread {
     verifyConnection(url, msgToEncode, encHash);
   }
 
-  private void openConnectionWithRetry(MapHost host,
-      Set<TaskAttemptID> remaining, URL url) throws IOException {
+  private void openConnectionWithRetry(URL url) throws IOException {
     long startTime = Time.monotonicNow();
     boolean shouldWait = true;
     while (shouldWait) {
@@ -537,7 +535,7 @@ class Fetcher<K,V> extends Thread {
             + " len: " + compressedLength + " to " + mapOutput.getDescription());
         mapOutput.shuffle(host, is, compressedLength, decompressedLength,
             metrics, reporter);
-      } catch (java.lang.InternalError e) {
+      } catch (java.lang.InternalError | Exception e) {
         LOG.warn("Failed to shuffle for fetcher#"+id, e);
         throw new IOException(e);
       }

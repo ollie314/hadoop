@@ -18,15 +18,15 @@
 package org.apache.hadoop.security;
 
 import java.io.FileInputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Hashtable;
 import java.util.List;
 
-import javax.naming.CommunicationException;
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
 import javax.naming.NamingException;
@@ -36,14 +36,12 @@ import javax.naming.directory.InitialDirContext;
 import javax.naming.directory.SearchControls;
 import javax.naming.directory.SearchResult;
 
-import org.apache.commons.io.Charsets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.IOUtils;
 
 /**
  * An implementation of {@link GroupMappingServiceProvider} which
@@ -172,6 +170,13 @@ public class LdapGroupsMapping
     LDAP_CONFIG_PREFIX + ".directory.search.timeout";
   public static final int DIRECTORY_SEARCH_TIMEOUT_DEFAULT = 10000; // 10s
 
+  public static final String CONNECTION_TIMEOUT =
+      LDAP_CONFIG_PREFIX + ".connection.timeout.ms";
+  public static final int CONNECTION_TIMEOUT_DEFAULT = 60 * 1000; // 60 seconds
+  public static final String READ_TIMEOUT =
+      LDAP_CONFIG_PREFIX + ".read.timeout.ms";
+  public static final int READ_TIMEOUT_DEFAULT = 60 * 1000; // 60 seconds
+
   private static final Log LOG = LogFactory.getLog(LdapGroupsMapping.class);
 
   private static final SearchControls SEARCH_CONTROLS = new SearchControls();
@@ -197,7 +202,7 @@ public class LdapGroupsMapping
   private String posixGidAttr;
   private boolean isPosix;
 
-  public static int RECONNECT_RETRY_COUNT = 3;
+  public static final int RECONNECT_RETRY_COUNT = 3;
   
   /**
    * Returns list of groups for a user.
@@ -210,40 +215,26 @@ public class LdapGroupsMapping
    * @return list of groups for a given user
    */
   @Override
-  public synchronized List<String> getGroups(String user) throws IOException {
-    List<String> emptyResults = new ArrayList<String>();
+  public synchronized List<String> getGroups(String user) {
     /*
      * Normal garbage collection takes care of removing Context instances when they are no longer in use. 
      * Connections used by Context instances being garbage collected will be closed automatically.
      * So in case connection is closed and gets CommunicationException, retry some times with new new DirContext/connection. 
      */
-    try {
-      return doGetGroups(user);
-    } catch (CommunicationException e) {
-      LOG.warn("Connection is closed, will try to reconnect");
-    } catch (NamingException e) {
-      LOG.warn("Exception trying to get groups for user " + user + ": "
-          + e.getMessage());
-      return emptyResults;
-    }
-
-    int retryCount = 0;
-    while (retryCount ++ < RECONNECT_RETRY_COUNT) {
-      //reset ctx so that new DirContext can be created with new connection
-      this.ctx = null;
-      
+    for(int retry = 0; retry < RECONNECT_RETRY_COUNT; retry++) {
       try {
         return doGetGroups(user);
-      } catch (CommunicationException e) {
-        LOG.warn("Connection being closed, reconnecting failed, retryCount = " + retryCount);
       } catch (NamingException e) {
-        LOG.warn("Exception trying to get groups for user " + user + ":"
-            + e.getMessage());
-        return emptyResults;
+        LOG.warn("Failed to get groups for user " + user + " (retry=" + retry
+            + ") by " + e);
+        LOG.trace("TRACE", e);
       }
+
+      //reset ctx so that new DirContext can be created with new connection
+      this.ctx = null;
     }
     
-    return emptyResults;
+    return Collections.emptyList();
   }
   
   List<String> doGetGroups(String user) throws NamingException {
@@ -297,6 +288,9 @@ public class LdapGroupsMapping
       }
     }
 
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("doGetGroups(" + user + ") return " + groups);
+    }
     return groups;
   }
 
@@ -318,6 +312,11 @@ public class LdapGroupsMapping
 
       env.put(Context.SECURITY_PRINCIPAL, bindUser);
       env.put(Context.SECURITY_CREDENTIALS, bindPassword);
+
+      env.put("com.sun.jndi.ldap.connect.timeout", conf.get(CONNECTION_TIMEOUT,
+          String.valueOf(CONNECTION_TIMEOUT_DEFAULT)));
+      env.put("com.sun.jndi.ldap.read.timeout", conf.get(READ_TIMEOUT,
+          String.valueOf(READ_TIMEOUT_DEFAULT)));
 
       ctx = new InitialDirContext(env);
     }
@@ -399,19 +398,15 @@ public class LdapGroupsMapping
   }
 
   String getPassword(Configuration conf, String alias, String defaultPass) {
-    String password = null;
+    String password = defaultPass;
     try {
       char[] passchars = conf.getPassword(alias);
       if (passchars != null) {
         password = new String(passchars);
       }
-      else {
-        password = defaultPass;
-      }
-    }
-    catch (IOException ioe) {
-      LOG.warn("Exception while trying to password for alias " + alias + ": "
-          + ioe.getMessage());
+    } catch (IOException ioe) {
+      LOG.warn("Exception while trying to get password for alias " + alias
+              + ": ", ioe);
     }
     return password;
   }
@@ -425,7 +420,7 @@ public class LdapGroupsMapping
 
     StringBuilder password = new StringBuilder();
     try (Reader reader = new InputStreamReader(
-        new FileInputStream(pwFile), Charsets.UTF_8)) {
+        new FileInputStream(pwFile), StandardCharsets.UTF_8)) {
       int c = reader.read();
       while (c > -1) {
         password.append((char)c);

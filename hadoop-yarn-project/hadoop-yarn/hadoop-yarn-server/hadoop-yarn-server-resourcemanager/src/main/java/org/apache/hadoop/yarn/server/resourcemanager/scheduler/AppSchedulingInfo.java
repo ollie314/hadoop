@@ -27,8 +27,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.logging.Log;
@@ -45,6 +46,7 @@ import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.util.resource.Resources;
@@ -72,10 +74,16 @@ public class AppSchedulingInfo {
   private boolean pending = true; // whether accepted/allocated by scheduler
   private ResourceUsage appResourceUsage;
 
-  private final Set<String> amBlacklist = new HashSet<>();
-  private Set<String> userBlacklist = new HashSet<>();
+  private AtomicBoolean userBlacklistChanged = new AtomicBoolean(false);
+  // Set of places (nodes / racks) blacklisted by the system. Today, this only
+  // has places blacklisted for AM containers.
+  private final Set<String> placesBlacklistedBySystem = new HashSet<>();
+  private Set<String> placesBlacklistedByApp = new HashSet<>();
 
-  final Set<Priority> priorities = new TreeSet<>(COMPARATOR);
+  private Set<String> requestedPartitions = new HashSet<>();
+
+  private final ConcurrentSkipListMap<Priority, Integer> priorities =
+      new ConcurrentSkipListMap<>(COMPARATOR);
   final Map<Priority, Map<String, ResourceRequest>> resourceRequestMap =
       new ConcurrentHashMap<>();
   final Map<NodeId, Map<Priority, Map<ContainerId,
@@ -118,6 +126,10 @@ public class AppSchedulingInfo {
     return pending;
   }
   
+  public Set<String> getRequestedPartitions() {
+    return requestedPartitions;
+  }
+
   /**
    * Clear any pending requests from this application.
    */
@@ -222,6 +234,7 @@ public class AppSchedulingInfo {
     if (null == requestsOnNodeWithPriority) {
       requestsOnNodeWithPriority = new TreeMap<>();
       requestsOnNode.put(priority, requestsOnNodeWithPriority);
+      incrementPriorityReference(priority);
     }
 
     requestsOnNodeWithPriority.put(containerId, request);
@@ -236,11 +249,28 @@ public class AppSchedulingInfo {
       LOG.debug("Added increase request:" + request.getContainerId()
           + " delta=" + delta);
     }
-    
-    // update priorities
-    priorities.add(priority);
   }
   
+  private void incrementPriorityReference(Priority priority) {
+    Integer priorityCount = priorities.get(priority);
+    if (priorityCount == null) {
+      priorities.put(priority, 1);
+    } else {
+      priorities.put(priority, priorityCount + 1);
+    }
+  }
+
+  private void decrementPriorityReference(Priority priority) {
+    Integer priorityCount = priorities.get(priority);
+    if (priorityCount != null) {
+      if (priorityCount > 1) {
+        priorities.put(priority, priorityCount - 1);
+      } else {
+        priorities.remove(priority);
+      }
+    }
+  }
+
   public synchronized boolean removeIncreaseRequest(NodeId nodeId, Priority priority,
       ContainerId containerId) {
     Map<Priority, Map<ContainerId, SchedContainerChangeRequest>> requestsOnNode =
@@ -261,6 +291,7 @@ public class AppSchedulingInfo {
     // remove hierarchies if it becomes empty
     if (requestsOnNodeWithPriority.isEmpty()) {
       requestsOnNode.remove(priority);
+      decrementPriorityReference(priority);
     }
     if (requestsOnNode.isEmpty()) {
       containerIncreaseRequestMap.remove(nodeId);
@@ -326,7 +357,6 @@ public class AppSchedulingInfo {
       if (asks == null) {
         asks = new ConcurrentHashMap<>();
         this.resourceRequestMap.put(priority, asks);
-        this.priorities.add(priority);
       }
 
       // Increment number of containers if recovering preempted resources
@@ -339,13 +369,11 @@ public class AppSchedulingInfo {
       asks.put(resourceName, request);
 
       if (resourceName.equals(ResourceRequest.ANY)) {
-        anyResourcesUpdated = true;
+        //update the applications requested labels set
+        requestedPartitions.add(request.getNodeLabelExpression() == null
+            ? RMNodeLabelsManager.NO_LABEL : request.getNodeLabelExpression());
 
-        // Activate application. Metrics activation is done here.
-        // TODO: Shouldn't we activate even if numContainers = 0?
-        if (request.getNumContainers() > 0) {
-          activeUsersManager.activateApplication(user, applicationId);
-        }
+        anyResourcesUpdated = true;
 
         // Update pendingResources
         updatePendingResources(lastRequest, request, queue.getMetrics());
@@ -356,14 +384,23 @@ public class AppSchedulingInfo {
 
   private void updatePendingResources(ResourceRequest lastRequest,
       ResourceRequest request, QueueMetrics metrics) {
+    int lastRequestContainers =
+        (lastRequest != null) ? lastRequest.getNumContainers() : 0;
     if (request.getNumContainers() <= 0) {
+      if (lastRequestContainers >= 0) {
+        decrementPriorityReference(request.getPriority());
+      }
       LOG.info("checking for deactivate of application :"
           + this.applicationId);
       checkForDeactivation();
+    } else {
+      // Activate application. Metrics activation is done here.
+      if (lastRequestContainers <= 0) {
+        incrementPriorityReference(request.getPriority());
+        activeUsersManager.activateApplication(user, applicationId);
+      }
     }
 
-    int lastRequestContainers =
-        (lastRequest != null) ? lastRequest.getNumContainers() : 0;
     Resource lastRequestCapability =
         lastRequest != null ? lastRequest.getCapability() : Resources.none();
     metrics.incrPendingResources(user,
@@ -435,44 +472,58 @@ public class AppSchedulingInfo {
   }
 
   /**
-   * The ApplicationMaster is updating the userBlacklist used for containers
-   * other than AMs.
+   * The ApplicationMaster is updating the placesBlacklistedByApp used for
+   * containers other than AMs.
    *
-   * @param blacklistAdditions resources to be added to the userBlacklist
-   * @param blacklistRemovals resources to be removed from the userBlacklist
+   * @param blacklistAdditions
+   *          resources to be added to the userBlacklist
+   * @param blacklistRemovals
+   *          resources to be removed from the userBlacklist
    */
-   public void updateBlacklist(
+  public void updatePlacesBlacklistedByApp(
       List<String> blacklistAdditions, List<String> blacklistRemovals) {
-     updateUserOrAMBlacklist(userBlacklist, blacklistAdditions,
-         blacklistRemovals);
-  }
-
-  /**
-   * RM is updating blacklist for AM containers.
-   * @param blacklistAdditions resources to be added to the amBlacklist
-   * @param blacklistRemovals resources to be added to the amBlacklist
-   */
-  public void updateAMBlacklist(
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
-    updateUserOrAMBlacklist(amBlacklist, blacklistAdditions,
-        blacklistRemovals);
-  }
-
-  void updateUserOrAMBlacklist(Set<String> blacklist,
-      List<String> blacklistAdditions, List<String> blacklistRemovals) {
-    synchronized (blacklist) {
-      if (blacklistAdditions != null) {
-        blacklist.addAll(blacklistAdditions);
-      }
-
-      if (blacklistRemovals != null) {
-        blacklist.removeAll(blacklistRemovals);
-      }
+    if (updateBlacklistedPlaces(placesBlacklistedByApp, blacklistAdditions,
+        blacklistRemovals)) {
+      userBlacklistChanged.set(true);
     }
   }
 
+  /**
+   * Update the list of places that are blacklisted by the system. Today the
+   * system only blacklists places when it sees that AMs failed there
+   *
+   * @param blacklistAdditions
+   *          resources to be added to placesBlacklistedBySystem
+   * @param blacklistRemovals
+   *          resources to be removed from placesBlacklistedBySystem
+   */
+  public void updatePlacesBlacklistedBySystem(
+      List<String> blacklistAdditions, List<String> blacklistRemovals) {
+    updateBlacklistedPlaces(placesBlacklistedBySystem, blacklistAdditions,
+        blacklistRemovals);
+  }
+
+  private static boolean updateBlacklistedPlaces(Set<String> blacklist,
+      List<String> blacklistAdditions, List<String> blacklistRemovals) {
+    boolean changed = false;
+    synchronized (blacklist) {
+      if (blacklistAdditions != null) {
+        changed = blacklist.addAll(blacklistAdditions);
+      }
+
+      if (blacklistRemovals != null) {
+        changed = blacklist.removeAll(blacklistRemovals) || changed;
+      }
+    }
+    return changed;
+  }
+
+  public boolean getAndResetBlacklistChanged() {
+    return userBlacklistChanged.getAndSet(false);
+  }
+
   public synchronized Collection<Priority> getPriorities() {
-    return priorities;
+    return priorities.keySet();
   }
 
   public synchronized Map<String, ResourceRequest> getResourceRequests(
@@ -500,20 +551,24 @@ public class AppSchedulingInfo {
   }
 
   /**
-   * Returns if the node is either blacklisted by the user or the system
-   * @param resourceName the resourcename
-   * @param useAMBlacklist true if it should check amBlacklist
+   * Returns if the place (node/rack today) is either blacklisted by the
+   * application (user) or the system
+   *
+   * @param resourceName
+   *          the resourcename
+   * @param blacklistedBySystem
+   *          true if it should check amBlacklist
    * @return true if its blacklisted
    */
-  public boolean isBlacklisted(String resourceName,
-      boolean useAMBlacklist) {
-    if (useAMBlacklist){
-      synchronized (amBlacklist) {
-        return amBlacklist.contains(resourceName);
+  public boolean isPlaceBlacklisted(String resourceName,
+      boolean blacklistedBySystem) {
+    if (blacklistedBySystem){
+      synchronized (placesBlacklistedBySystem) {
+        return placesBlacklistedBySystem.contains(resourceName);
       }
     } else {
-      synchronized (userBlacklist) {
-        return userBlacklist.contains(resourceName);
+      synchronized (placesBlacklistedByApp) {
+        return placesBlacklistedByApp.contains(resourceName);
       }
     }
   }
@@ -667,6 +722,7 @@ public class AppSchedulingInfo {
     // Do we have any outstanding requests?
     // If there is nothing, we need to deactivate this application
     if (numOffSwitchContainers == 0) {
+      decrementPriorityReference(offSwitchRequest.getPriority());
       checkForDeactivation();
     }
     
@@ -677,23 +733,7 @@ public class AppSchedulingInfo {
   }
   
   private synchronized void checkForDeactivation() {
-    boolean deactivate = true;
-    for (Priority priority : getPriorities()) {
-      ResourceRequest request = getResourceRequest(priority, ResourceRequest.ANY);
-      if (request != null) {
-        if (request.getNumContainers() > 0) {
-          deactivate = false;
-          break;
-        }
-      }
-    }
-    
-    // also we need to check increase request
-    if (!deactivate) {
-      deactivate = containerIncreaseRequestMap.isEmpty();
-    }
-
-    if (deactivate) {
+    if (priorities.isEmpty()) {
       activeUsersManager.deactivateApplication(user, applicationId);
     }
   }
@@ -751,12 +791,12 @@ public class AppSchedulingInfo {
   }
 
   public Set<String> getBlackList() {
-    return this.userBlacklist;
+    return this.placesBlacklistedByApp;
   }
 
   public Set<String> getBlackListCopy() {
-    synchronized (userBlacklist) {
-      return new HashSet<>(this.userBlacklist);
+    synchronized (placesBlacklistedByApp) {
+      return new HashSet<>(this.placesBlacklistedByApp);
     }
   }
 
@@ -764,7 +804,7 @@ public class AppSchedulingInfo {
       AppSchedulingInfo appInfo) {
     // This should not require locking the userBlacklist since it will not be
     // used by this instance until after setCurrentAppAttempt.
-    this.userBlacklist = appInfo.getBlackList();
+    this.placesBlacklistedByApp = appInfo.getBlackList();
   }
 
   public synchronized void recoverContainer(RMContainer rmContainer) {

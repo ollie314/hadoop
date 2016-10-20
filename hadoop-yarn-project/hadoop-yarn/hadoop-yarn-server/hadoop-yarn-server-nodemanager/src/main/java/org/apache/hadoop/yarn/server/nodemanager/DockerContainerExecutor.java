@@ -195,9 +195,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
     ContainerId containerId = container.getContainerId();
 
     // create container dirs on all disks
-    String containerIdStr = ConverterUtils.toString(containerId);
-    String appIdStr = ConverterUtils.toString(
-      containerId.getApplicationAttemptId().getApplicationId());
+    String containerIdStr = containerId.toString();
+    String appIdStr =
+        containerId.getApplicationAttemptId().getApplicationId().toString();
     for (String sLocalDir : localDirs) {
       Path usersdir = new Path(sLocalDir, ContainerLocalizer.USERCACHE);
       Path userdir = new Path(usersdir, userName);
@@ -284,7 +284,9 @@ public class DockerContainerExecutor extends ContainerExecutor {
       shExec = new ShellCommandExecutor(
         command,
         new File(containerWorkDir.toUri().getPath()),
-        container.getLaunchContext().getEnvironment());      // sanitized env
+        container.getLaunchContext().getEnvironment(),      // sanitized env
+        0L,
+        false);
       if (isContainerActive(containerId)) {
         shExec.execute();
       } else {

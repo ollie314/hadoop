@@ -43,6 +43,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -581,7 +582,7 @@ public class DirectoryScanner implements Runnable {
     Map<String, ScanInfo[]> diskReport = getDiskReport();
 
     // Hold FSDataset lock to prevent further changes to the block map
-    synchronized(dataset) {
+    try(AutoCloseableLock lock = dataset.acquireDatasetLock()) {
       for (Entry<String, ScanInfo[]> entry : diskReport.entrySet()) {
         String bpid = entry.getKey();
         ScanInfo[] blockpoolReport = entry.getValue();
@@ -891,8 +892,7 @@ public class DirectoryScanner implements Runnable {
             break;
           }
         }
-        verifyFileLocation(blockFile.getParentFile(), bpFinalizedDir,
-            blockId);
+        verifyFileLocation(blockFile, bpFinalizedDir, blockId);
         report.add(new ScanInfo(blockId, blockFile, metaFile, vol));
       }
       return report;
@@ -902,12 +902,15 @@ public class DirectoryScanner implements Runnable {
      * Verify whether the actual directory location of block file has the
      * expected directory path computed using its block ID.
      */
-    private void verifyFileLocation(File actualBlockDir,
+    private void verifyFileLocation(File actualBlockFile,
         File bpFinalizedDir, long blockId) {
       File blockDir = DatanodeUtil.idToBlockDir(bpFinalizedDir, blockId);
-      if (actualBlockDir.compareTo(blockDir) != 0) {
+      if (actualBlockFile.getParentFile().compareTo(blockDir) != 0) {
+        File expBlockFile = new File(blockDir, actualBlockFile.getName());
         LOG.warn("Block: " + blockId
-            + " has to be upgraded to block ID-based layout");
+            + " has to be upgraded to block ID-based layout. "
+            + "Actual block file path: " + actualBlockFile
+            + ", expected block file path: " + expBlockFile);
       }
     }
 

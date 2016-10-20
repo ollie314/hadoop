@@ -25,14 +25,19 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.security.PrivilegedExceptionAction;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
@@ -56,9 +61,15 @@ public class TestTimelineClient {
 
   private TimelineClientImpl client;
   private TimelineWriter spyTimelineWriter;
+  private static final File testDir = new File(
+      System.getProperty("test.build.data",
+          System.getProperty("java.io.tmpdir")),
+          "TestTimelineClient");
 
   @Before
   public void setup() {
+    FileUtil.fullyDelete(testDir);
+    testDir.mkdirs();
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 1.0f);
@@ -67,6 +78,7 @@ public class TestTimelineClient {
 
   @After
   public void tearDown() {
+    FileUtil.fullyDelete(testDir);
     if (client != null) {
       client.stop();
     }
@@ -234,6 +246,8 @@ public class TestTimelineClient {
     UserGroupInformation.setConfiguration(conf);
 
     TimelineClientImpl client = createTimelineClient(conf);
+    TimelineClientImpl clientFake =
+        createTimelineClientFakeTimelineClientRetryOp(conf);
     TestTimlineDelegationTokenSecretManager dtManager =
         new TestTimlineDelegationTokenSecretManager();
     try {
@@ -278,8 +292,24 @@ public class TestTimelineClient {
       } catch (RuntimeException ce) {
         assertException(client, ce);
       }
+
+      // Test DelegationTokenOperationsRetry on SocketTimeoutException
+      try {
+        TimelineDelegationTokenIdentifier timelineDT =
+            new TimelineDelegationTokenIdentifier(
+                new Text("tester"), new Text("tester"), new Text("tester"));
+        clientFake.cancelDelegationToken(
+            new Token<TimelineDelegationTokenIdentifier>(timelineDT.getBytes(),
+                dtManager.createPassword(timelineDT),
+                timelineDT.getKind(),
+                new Text("0.0.0.0:8188")));
+        assertFail();
+      } catch (RuntimeException ce) {
+        assertException(clientFake, ce);
+      }
     } finally {
       client.stop();
+      clientFake.stop();
       dtManager.stopThreads();
     }
   }
@@ -298,7 +328,7 @@ public class TestTimelineClient {
         client.connectionRetry.getRetired());
   }
 
-  private static ClientResponse mockEntityClientResponse(
+  public static ClientResponse mockEntityClientResponse(
       TimelineWriter spyTimelineWriter, ClientResponse.Status status,
       boolean hasError, boolean hasRuntimeError) {
     ClientResponse response = mock(ClientResponse.class);
@@ -391,6 +421,70 @@ public class TestTimelineClient {
     client.init(conf);
     client.start();
     return client;
+  }
+
+  private TimelineClientImpl createTimelineClientFakeTimelineClientRetryOp(
+      YarnConfiguration conf) {
+    TimelineClientImpl client = new TimelineClientImpl() {
+
+      @Override
+      public TimelineClientRetryOp
+          createTimelineClientRetryOpForOperateDelegationToken(
+              final PrivilegedExceptionAction<?> action) throws IOException {
+        TimelineClientRetryOpForOperateDelegationToken op =
+            spy(new TimelineClientRetryOpForOperateDelegationToken(
+            UserGroupInformation.getCurrentUser(), action));
+        doThrow(new SocketTimeoutException("Test socketTimeoutException"))
+            .when(op).run();
+        return op;
+      }
+    };
+    client.init(conf);
+    client.start();
+    return client;
+  }
+
+  @Test
+  public void testTimelineClientCleanup() throws Exception {
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
+    conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES, 0);
+
+    String sslConfDir =
+        KeyStoreTestUtil.getClasspathDir(TestTimelineClient.class);
+    KeyStoreTestUtil.setupSSLConfig(testDir.getAbsolutePath(),
+        sslConfDir, conf, false);
+    client = createTimelineClient(conf);
+
+    ThreadGroup threadGroup = Thread.currentThread().getThreadGroup();
+
+    while (threadGroup.getParent() != null) {
+      threadGroup = threadGroup.getParent();
+    }
+
+    Thread[] threads = new Thread[threadGroup.activeCount()];
+
+    threadGroup.enumerate(threads);
+    Thread reloaderThread = null;
+    for (Thread thread : threads) {
+      if ((thread.getName() != null)
+          && (thread.getName().contains("Truststore reloader thread"))) {
+        reloaderThread = thread;
+      }
+    }
+    Assert.assertTrue("Reloader is not alive", reloaderThread.isAlive());
+
+    client.close();
+
+    boolean reloaderStillAlive = true;
+    for (int i = 0; i < 10; i++) {
+      reloaderStillAlive = reloaderThread.isAlive();
+      if (!reloaderStillAlive) {
+        break;
+      }
+      Thread.sleep(1000);
+    }
+    Assert.assertFalse("Reloader is still alive", reloaderStillAlive);
   }
 
   private static class TestTimlineDelegationTokenSecretManager extends

@@ -615,15 +615,16 @@ public class ContainersMonitorImpl extends AbstractService implements
     }
 
     ContainerId containerId = monitoringEvent.getContainerId();
-    ContainerMetrics usageMetrics = ContainerMetrics
-        .forContainer(containerId, containerMetricsPeriodMs,
-        containerMetricsUnregisterDelayMs);
+    ContainerMetrics usageMetrics;
 
     int vmemLimitMBs;
     int pmemLimitMBs;
     int cpuVcores;
     switch (monitoringEvent.getType()) {
     case START_MONITORING_CONTAINER:
+      usageMetrics = ContainerMetrics
+          .forContainer(containerId, containerMetricsPeriodMs,
+          containerMetricsUnregisterDelayMs);
       ContainerStartMonitoringEvent startEvent =
           (ContainerStartMonitoringEvent) monitoringEvent;
       usageMetrics.recordStateChangeDurations(
@@ -636,13 +637,20 @@ public class ContainersMonitorImpl extends AbstractService implements
           vmemLimitMBs, pmemLimitMBs, cpuVcores);
       break;
     case STOP_MONITORING_CONTAINER:
-      usageMetrics.finished();
+      usageMetrics = ContainerMetrics.getContainerMetrics(
+          containerId);
+      if (usageMetrics != null) {
+        usageMetrics.finished();
+      }
       break;
     case CHANGE_MONITORING_CONTAINER_RESOURCE:
+      usageMetrics = ContainerMetrics
+          .forContainer(containerId, containerMetricsPeriodMs,
+          containerMetricsUnregisterDelayMs);
       ChangeMonitoringContainerResourceEvent changeEvent =
           (ChangeMonitoringContainerResourceEvent) monitoringEvent;
       Resource resource = changeEvent.getResource();
-      pmemLimitMBs = resource.getMemory();
+      pmemLimitMBs = (int) resource.getMemorySize();
       vmemLimitMBs = (int) (pmemLimitMBs * vmemRatio);
       cpuVcores = resource.getVirtualCores();
       usageMetrics.recordResourceLimit(
@@ -740,7 +748,7 @@ public class ContainersMonitorImpl extends AbstractService implements
       }
       LOG.info("Changing resource-monitoring for " + containerId);
       updateContainerMetrics(monitoringEvent);
-      long pmemLimit = changeEvent.getResource().getMemory() * 1024L * 1024L;
+      long pmemLimit = changeEvent.getResource().getMemorySize() * 1024L * 1024L;
       long vmemLimit = (long) (pmemLimit * vmemRatio);
       int cpuVcores = changeEvent.getResource().getVirtualCores();
       processTreeInfo.setResourceLimit(pmemLimit, vmemLimit, cpuVcores);

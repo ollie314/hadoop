@@ -315,8 +315,8 @@ public class ResourceTrackerService extends AbstractService implements
     }
 
     // Check if this node is a 'valid' node
-    if (!this.nodesListManager.isValidNode(host) ||
-        this.nodesListManager.isUntrackedNode(host)) {
+    if (!this.nodesListManager.isValidNode(host) &&
+        !isNodeInDecommissioning(nodeId)) {
       String message =
           "Disallowed NodeManager from  " + host
               + ", Sending SHUTDOWN signal to the NodeManager.";
@@ -331,7 +331,7 @@ public class ResourceTrackerService extends AbstractService implements
     String nid = nodeId.toString();
 
     if (nodes != null && Arrays.asList(nodes).contains(nid)) {
-      capability.setMemory(this.drConf.getMemoryPerNode(nid));
+      capability.setMemorySize(this.drConf.getMemoryPerNode(nid));
       capability.setVirtualCores(this.drConf.getVcoresPerNode(nid));
       if (LOG.isDebugEnabled()) {
         LOG.debug("Resource for node: " + nid + " is adjusted to " +
@@ -340,7 +340,7 @@ public class ResourceTrackerService extends AbstractService implements
     }
 
     // Check if this node has minimum allocations
-    if (capability.getMemory() < minAllocMb
+    if (capability.getMemorySize() < minAllocMb
         || capability.getVirtualCores() < minAllocVcores) {
       String message =
           "NodeManager from  " + host
@@ -447,9 +447,8 @@ public class ResourceTrackerService extends AbstractService implements
 
     // 1. Check if it's a valid (i.e. not excluded) node, if not, see if it is
     // in decommissioning.
-    if ((!this.nodesListManager.isValidNode(nodeId.getHost()) &&
-        !isNodeInDecommissioning(nodeId)) ||
-        this.nodesListManager.isUntrackedNode(nodeId.getHost())) {
+    if (!this.nodesListManager.isValidNode(nodeId.getHost())
+        && !isNodeInDecommissioning(nodeId)) {
       String message =
           "Disallowed NodeManager nodeId: " + nodeId + " hostname: "
               + nodeId.getHost();

@@ -198,8 +198,6 @@ public class TestMiniYarnClusterNodeUtilization {
   /**
    * Verify both the RMNode and SchedulerNode have been updated with the test
    * fixture utilization data.
-   * @param containersUtilization Utilization of the container.
-   * @param nodeUtilization Utilization of the node.
    */
   private void verifySimulatedUtilization() throws InterruptedException {
     ResourceManager rm = cluster.getResourceManager(0);
@@ -214,8 +212,10 @@ public class TestMiniYarnClusterNodeUtilization {
     // We check if the nodeUtilization is up to date
     for (int i=0; i<100; i++) {
       for (RMNode ni : rmContext.getRMNodes().values()) {
-        if (ni.getNodeUtilization().equals(nodeUtilization)) {
-          break;
+        if (ni.getNodeUtilization() != null) {
+            if (ni.getNodeUtilization().equals(nodeUtilization)) {
+              break;
+            }
         }
       }
       Thread.sleep(100);

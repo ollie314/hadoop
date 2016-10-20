@@ -29,6 +29,7 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.Collections;
@@ -40,10 +41,8 @@ import java.util.Map;
 
 import javax.net.SocketFactory;
 
-import org.apache.commons.io.Charsets;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProvider;
-import org.apache.hadoop.crypto.key.KeyProviderFactory;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
@@ -68,6 +67,7 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.NodeBase;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.util.KMSUtil;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,11 +80,21 @@ public class DFSUtilClient {
   public static final byte[] EMPTY_BYTES = {};
   private static final Logger LOG = LoggerFactory.getLogger(
       DFSUtilClient.class);
+
+  // Using the charset canonical name for String/byte[] conversions is much
+  // more efficient due to use of cached encoders/decoders.
+  private static final String UTF8_CSN = StandardCharsets.UTF_8.name();
+
   /**
    * Converts a string to a byte array using UTF8 encoding.
    */
   public static byte[] string2Bytes(String str) {
-    return str.getBytes(Charsets.UTF_8);
+    try {
+      return str.getBytes(UTF8_CSN);
+    } catch (UnsupportedEncodingException e) {
+      // should never happen!
+      throw new IllegalArgumentException("UTF8 decoding is not supported", e);
+    }
   }
 
   /**
@@ -270,13 +280,13 @@ public class DFSUtilClient {
    * @param length The number of bytes to decode
    * @return The decoded string
    */
-  private static String bytes2String(byte[] bytes, int offset, int length) {
+  static String bytes2String(byte[] bytes, int offset, int length) {
     try {
-      return new String(bytes, offset, length, "UTF8");
-    } catch(UnsupportedEncodingException e) {
-      assert false : "UTF8 encoding is not supported ";
+      return new String(bytes, offset, length, UTF8_CSN);
+    } catch (UnsupportedEncodingException e) {
+      // should never happen!
+      throw new IllegalArgumentException("UTF8 encoding is not supported", e);
     }
-    return null;
   }
 
   /**
@@ -498,6 +508,17 @@ public class DFSUtilClient {
     return new ClientDatanodeProtocolTranslatorPB(addr, ticket, conf, factory);
   }
 
+  private static String keyProviderUriKeyName =
+      CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH;
+
+  /**
+   * Set the key provider uri configuration key name for creating key providers.
+   * @param keyName The configuration key name.
+   */
+  public static void setKeyProviderUriKeyName(final String keyName) {
+    keyProviderUriKeyName = keyName;
+  }
+
   /**
    * Creates a new KeyProvider from the given Configuration.
    *
@@ -508,29 +529,7 @@ public class DFSUtilClient {
    */
   public static KeyProvider createKeyProvider(
       final Configuration conf) throws IOException {
-    final String providerUriStr =
-        conf.getTrimmed(HdfsClientConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, "");
-    // No provider set in conf
-    if (providerUriStr.isEmpty()) {
-      return null;
-    }
-    final URI providerUri;
-    try {
-      providerUri = new URI(providerUriStr);
-    } catch (URISyntaxException e) {
-      throw new IOException(e);
-    }
-    KeyProvider keyProvider = KeyProviderFactory.get(providerUri, conf);
-    if (keyProvider == null) {
-      throw new IOException("Could not instantiate KeyProvider from " +
-          HdfsClientConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI + " setting of '"
-          + providerUriStr + "'");
-    }
-    if (keyProvider.isTransient()) {
-      throw new IOException("KeyProvider " + keyProvider.toString()
-          + " was found but it is a transient provider.");
-    }
-    return keyProvider;
+    return KMSUtil.createKeyProvider(conf, keyProviderUriKeyName);
   }
 
   public static Peer peerFromSocket(Socket socket)
@@ -600,16 +599,17 @@ public class DFSUtilClient {
   }
 
   /**
-   * Probe for HDFS Encryption being enabled; this uses the value of
-   * the option {@link HdfsClientConfigKeys#DFS_ENCRYPTION_KEY_PROVIDER_URI},
-   * returning true if that property contains a non-empty, non-whitespace
+   * Probe for HDFS Encryption being enabled; this uses the value of the option
+   * {@link CommonConfigurationKeysPublic#HADOOP_SECURITY_KEY_PROVIDER_PATH}
+   * , returning true if that property contains a non-empty, non-whitespace
    * string.
    * @param conf configuration to probe
    * @return true if encryption is considered enabled.
    */
   public static boolean isHDFSEncryptionEnabled(Configuration conf) {
-    return !conf.getTrimmed(
-        HdfsClientConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, "").isEmpty();
+    return !(conf.getTrimmed(
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH, "")
+        .isEmpty());
   }
 
   public static InetSocketAddress getNNAddress(String address) {

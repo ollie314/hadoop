@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.resourcemanager;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.security.AccessControlException;
 import java.text.MessageFormat;
@@ -79,6 +80,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetLabelsToNodesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetLabelsToNodesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
@@ -145,8 +148,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSyst
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystemUtil;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppKillByClientEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppMoveEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
@@ -745,15 +747,28 @@ public class ClientRMService extends AbstractService implements
     }
 
     if (application.isAppFinalStateStored()) {
-      RMAuditLogger.logSuccess(callerUGI.getShortUserName(),
-          AuditConstants.KILL_APP_REQUEST, "ClientRMService", applicationId,
-          callerContext);
       return KillApplicationResponse.newInstance(true);
     }
 
-    this.rmContext.getDispatcher().getEventHandler().handle(
-        new RMAppEvent(applicationId, RMAppEventType.KILL,
-        "Application killed by user."));
+    StringBuilder message = new StringBuilder();
+    message.append("Application ").append(applicationId)
+        .append(" was killed by user ").append(callerUGI.getShortUserName());
+
+    InetAddress remoteAddress = Server.getRemoteIp();
+    if (null != remoteAddress) {
+      message.append(" at ").append(remoteAddress.getHostAddress());
+    }
+
+    String diagnostics = org.apache.commons.lang.StringUtils
+        .trimToNull(request.getDiagnostics());
+    if (diagnostics != null) {
+      message.append(" with diagnostic message: ");
+      message.append(diagnostics);
+    }
+
+    this.rmContext.getDispatcher().getEventHandler()
+        .handle(new RMAppKillByClientEvent(applicationId, message.toString(),
+            callerUGI, remoteAddress));
 
     // For UnmanagedAMs, return true so they don't retry
     return KillApplicationResponse.newInstance(
@@ -1213,18 +1228,47 @@ public class ClientRMService extends AbstractService implements
   }
 
   @Override
+  public GetNewReservationResponse getNewReservation(
+      GetNewReservationRequest request) throws YarnException, IOException {
+    checkReservationSytem(AuditConstants.CREATE_NEW_RESERVATION_REQUEST);
+    GetNewReservationResponse response =
+        recordFactory.newRecordInstance(GetNewReservationResponse.class);
+
+    ReservationId reservationId = reservationSystem.getNewReservationId();
+    response.setReservationId(reservationId);
+    // Create a new Reservation Id
+    return response;
+  }
+
+  @Override
   public ReservationSubmissionResponse submitReservation(
       ReservationSubmissionRequest request) throws YarnException, IOException {
     // Check if reservation system is enabled
     checkReservationSytem(AuditConstants.SUBMIT_RESERVATION_REQUEST);
     ReservationSubmissionResponse response =
         recordFactory.newRecordInstance(ReservationSubmissionResponse.class);
-    // Create a new Reservation Id
-    ReservationId reservationId = reservationSystem.getNewReservationId();
+    ReservationId reservationId = request.getReservationId();
     // Validate the input
     Plan plan =
         rValidator.validateReservationSubmissionRequest(reservationSystem,
             request, reservationId);
+
+    ReservationAllocation allocation = plan.getReservationById(reservationId);
+
+    if (allocation != null) {
+      boolean isNewDefinition = !allocation.getReservationDefinition().equals(
+          request.getReservationDefinition());
+      if (isNewDefinition) {
+        String message = "Reservation allocation already exists with the " +
+            "reservation id " + reservationId.toString() + ", but a different" +
+            " reservation definition was provided. Please try again with a " +
+            "new reservation id, or consider updating the reservation instead.";
+        throw RPCUtil.getRemoteException(message);
+      } else {
+        return response;
+      }
+    }
+
     // Check ACLs
     String queueName = request.getQueue();
     String user =
@@ -1243,7 +1287,6 @@ public class ClientRMService extends AbstractService implements
         refreshScheduler(queueName, request.getReservationDefinition(),
             reservationId.toString());
         // return the reservation id
-        response.setReservationId(reservationId);
       }
     } catch (PlanningException e) {
       RMAuditLogger.logFailure(user, AuditConstants.SUBMIT_RESERVATION_REQUEST,
@@ -1595,7 +1638,7 @@ public class ClientRMService extends AbstractService implements
    * to RMNodeImpl so that the next NM heartbeat will pick up the signal request
    */
   @Override
-  public SignalContainerResponse signalContainer(
+  public SignalContainerResponse signalToContainer(
       SignalContainerRequest request) throws YarnException, IOException {
     ContainerId containerId = request.getContainerId();
 

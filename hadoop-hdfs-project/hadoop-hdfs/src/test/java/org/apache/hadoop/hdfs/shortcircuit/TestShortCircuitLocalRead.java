@@ -45,7 +45,7 @@ import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.TestBlockReaderLocal;
+import org.apache.hadoop.hdfs.client.impl.TestBlockReaderLocal;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
@@ -54,7 +54,6 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtocol;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
-import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.unix.DomainSocket;
 import org.apache.hadoop.net.unix.TemporarySocketDirectory;
@@ -153,8 +152,11 @@ public class TestShortCircuitLocalRead {
     //Read a small number of bytes first.
     int nread = stm.read(actual, 0, 3);
     nread += stm.read(actual, nread, 2);
-    //Read across chunk boundary
-    nread += stm.read(actual, nread, 517);
+    int len = 517;
+    if (actual.length - nread >= len) {
+      //Read across chunk boundary
+      nread += stm.read(actual, nread, len);
+    }
     checkData(actual, readOffset, expected, nread, "A few bytes");
     //Now read rest of it
     while (nread < actual.length) {
@@ -373,10 +375,12 @@ public class TestShortCircuitLocalRead {
       try {
         proxy.getBlockLocalPathInfo(blk, token);
         Assert.fail("The call should have failed as this user "
-            + " is not allowed to call getBlockLocalPathInfo");
+            + " is not configured in "
+            + DFSConfigKeys.DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY);
       } catch (IOException ex) {
         Assert.assertTrue(ex.getMessage().contains(
-            "not allowed to call getBlockLocalPathInfo"));
+            "not configured in "
+            + DFSConfigKeys.DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY));
       }
     } finally {
       fs.close();

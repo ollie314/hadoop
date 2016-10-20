@@ -159,20 +159,35 @@ public class TestUtils {
   
   public static ResourceRequest createResourceRequest(
       String resourceName, int memory, int numContainers, boolean relaxLocality,
-      Priority priority, RecordFactory recordFactory) {
-    ResourceRequest request = 
+      Priority priority, RecordFactory recordFactory, String labelExpression) {
+    return createResourceRequest(resourceName, memory, 1, numContainers,
+        relaxLocality, priority, recordFactory, labelExpression);
+  }
+
+  public static ResourceRequest createResourceRequest(String resourceName,
+      int memory, int vcores, int numContainers, boolean relaxLocality,
+      Priority priority, RecordFactory recordFactory, String labelExpression) {
+    ResourceRequest request =
         recordFactory.newRecordInstance(ResourceRequest.class);
-    Resource capability = Resources.createResource(memory, 1);
-    
+    Resource capability = Resources.createResource(memory, vcores);
+
     request.setNumContainers(numContainers);
     request.setResourceName(resourceName);
     request.setCapability(capability);
     request.setRelaxLocality(relaxLocality);
     request.setPriority(priority);
-    request.setNodeLabelExpression(RMNodeLabelsManager.NO_LABEL);
+    request.setNodeLabelExpression(labelExpression);
     return request;
   }
   
+  public static ResourceRequest createResourceRequest(
+      String resourceName, int memory, int numContainers, boolean relaxLocality,
+ Priority priority,
+      RecordFactory recordFactory) {
+    return createResourceRequest(resourceName, memory, numContainers,
+        relaxLocality, priority, recordFactory, RMNodeLabelsManager.NO_LABEL);
+  }
+
   public static ApplicationId getMockApplicationId(int appId) {
     return ApplicationId.newInstance(0L, appId);
   }
@@ -183,13 +198,18 @@ public class TestUtils {
     return ApplicationAttemptId.newInstance(applicationId, attemptId);
   }
   
-  public static FiCaSchedulerNode getMockNode(
-      String host, String rack, int port, int capability) {
+  public static FiCaSchedulerNode getMockNode(String host, String rack,
+      int port, int memory) {
+    return getMockNode(host, rack, port, memory, 1);
+  }
+
+  public static FiCaSchedulerNode getMockNode(String host, String rack,
+      int port, int memory, int vcores) {
     NodeId nodeId = NodeId.newInstance(host, port);
     RMNode rmNode = mock(RMNode.class);
     when(rmNode.getNodeID()).thenReturn(nodeId);
     when(rmNode.getTotalCapability()).thenReturn(
-        Resources.createResource(capability, 1));
+        Resources.createResource(memory, vcores));
     when(rmNode.getNodeAddress()).thenReturn(host+":"+port);
     when(rmNode.getHostName()).thenReturn(host);
     when(rmNode.getRackName()).thenReturn(rack);

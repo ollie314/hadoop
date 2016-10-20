@@ -62,10 +62,11 @@ import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.yarn.server.api.ContainerType;
 
 /**
  * Builder utilities to construct various objects.
@@ -112,7 +113,7 @@ public class BuilderUtils {
   public static LocalResource newLocalResource(URI uri,
       LocalResourceType type, LocalResourceVisibility visibility, long size,
       long timestamp, boolean shouldBeUploadedToSharedCache) {
-    return newLocalResource(ConverterUtils.getYarnUrlFromURI(uri), type,
+    return newLocalResource(URL.fromURI(uri), type,
         visibility, size, timestamp, shouldBeUploadedToSharedCache);
   }
 
@@ -155,12 +156,14 @@ public class BuilderUtils {
     return cId;
   }
 
-  public static Token newContainerToken(ContainerId cId, String host,
-      int port, String user, Resource r, long expiryTime, int masterKeyId,
-      byte[] password, long rmIdentifier) throws IOException {
+  public static Token newContainerToken(ContainerId cId, int containerVersion,
+      String host, int port, String user, Resource r, long expiryTime,
+      int masterKeyId, byte[] password, long rmIdentifier) throws IOException {
     ContainerTokenIdentifier identifier =
-        new ContainerTokenIdentifier(cId, host + ":" + port, user, r,
-          expiryTime, masterKeyId, rmIdentifier, Priority.newInstance(0), 0);
+        new ContainerTokenIdentifier(cId, containerVersion, host + ":" + port,
+            user, r, expiryTime, masterKeyId, rmIdentifier,
+            Priority.newInstance(0), 0, null, CommonNodeLabelsManager.NO_LABEL,
+            ContainerType.TASK);
     return newContainerToken(BuilderUtils.newNodeId(host, port), password,
         identifier);
   }
@@ -425,9 +428,9 @@ public class BuilderUtils {
     return report;
   }
 
-  public static Resource newResource(int memory, int vCores) {
+  public static Resource newResource(long memory, int vCores) {
     Resource resource = recordFactory.newRecordInstance(Resource.class);
-    resource.setMemory(memory);
+    resource.setMemorySize(memory);
     resource.setVirtualCores(vCores);
     return resource;
   }

@@ -27,8 +27,10 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.RoundRobinVolumeChoosingPolicy;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.VolumeChoosingPolicy;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.StringUtils;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 import java.io.File;
 import java.io.IOException;
@@ -36,7 +38,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
-
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
@@ -142,5 +144,77 @@ public class TestFsVolumeList {
     FsVolumeReference ref = volume.obtainReference();
     volumeList.addVolume(ref);
     assertNull(ref.getVolume());
+  }
+
+  @Test
+  public void testDfsReservedForDifferentStorageTypes() throws IOException {
+    Configuration conf = new Configuration();
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY, 100L);
+
+    File volDir = new File(baseDir, "volume-0");
+    volDir.mkdirs();
+    // when storage type reserved is not configured,should consider
+    // dfs.datanode.du.reserved.
+    FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", volDir, conf,
+        StorageType.RAM_DISK);
+    assertEquals("", 100L, volume.getReserved());
+    // when storage type reserved is configured.
+    conf.setLong(
+        DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY + "."
+            + StringUtils.toLowerCase(StorageType.RAM_DISK.toString()), 1L);
+    conf.setLong(
+        DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY + "."
+            + StringUtils.toLowerCase(StorageType.SSD.toString()), 2L);
+    FsVolumeImpl volume1 = new FsVolumeImpl(dataset, "storage-id", volDir,
+        conf, StorageType.RAM_DISK);
+    assertEquals("", 1L, volume1.getReserved());
+    FsVolumeImpl volume2 = new FsVolumeImpl(dataset, "storage-id", volDir,
+        conf, StorageType.SSD);
+    assertEquals("", 2L, volume2.getReserved());
+    FsVolumeImpl volume3 = new FsVolumeImpl(dataset, "storage-id", volDir,
+        conf, StorageType.DISK);
+    assertEquals("", 100L, volume3.getReserved());
+    FsVolumeImpl volume4 = new FsVolumeImpl(dataset, "storage-id", volDir,
+        conf, StorageType.DEFAULT);
+    assertEquals("", 100L, volume4.getReserved());
+  }
+
+  @Test
+  public void testNonDfsUsedMetricForVolume() throws Exception {
+    File volDir = new File(baseDir, "volume-0");
+    volDir.mkdirs();
+    /*
+     * Lets have the example.
+     * Capacity - 1000
+     * Reserved - 100
+     * DfsUsed  - 200
+     * Actual Non-DfsUsed - 300 -->(expected)
+     * ReservedForReplicas - 50
+     */
+    long diskCapacity = 1000L;
+    long duReserved = 100L;
+    long dfsUsage = 200L;
+    long actualNonDfsUsage = 300L;
+    long reservedForReplicas = 50L;
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY, duReserved);
+    FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", volDir, conf,
+        StorageType.DEFAULT);
+    FsVolumeImpl spyVolume = Mockito.spy(volume);
+    // Set Capacity for testing
+    long testCapacity = diskCapacity - duReserved;
+    spyVolume.setCapacityForTesting(testCapacity);
+    // Mock volume.getDfAvailable()
+    long dfAvailable = diskCapacity - dfsUsage - actualNonDfsUsage;
+    Mockito.doReturn(dfAvailable).when(spyVolume).getDfAvailable();
+    // Mock dfsUsage
+    Mockito.doReturn(dfsUsage).when(spyVolume).getDfsUsed();
+    // Mock reservedForReplcas
+    Mockito.doReturn(reservedForReplicas).when(spyVolume)
+        .getReservedForReplicas();
+    Mockito.doReturn(actualNonDfsUsage).when(spyVolume)
+        .getActualNonDfsUsed();
+    long expectedNonDfsUsage =
+        actualNonDfsUsage - duReserved;
+    assertEquals(expectedNonDfsUsage, spyVolume.getNonDfsUsed());
   }
 }

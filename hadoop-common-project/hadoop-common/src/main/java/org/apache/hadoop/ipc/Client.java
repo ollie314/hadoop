@@ -18,60 +18,24 @@
 
 package org.apache.hadoop.ipc;
 
-import static org.apache.hadoop.ipc.RpcConstants.*;
-
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.EOFException;
-import java.io.FilterInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InterruptedIOException;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
-import java.security.PrivilegedExceptionAction;
-import java.util.Arrays;
-import java.util.Hashtable;
-import java.util.Iterator;
-import java.util.Map.Entry;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-
-import javax.net.SocketFactory;
-import javax.security.sasl.Sasl;
-
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
-import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryPolicy.RetryAction;
-import org.apache.hadoop.ipc.ProtobufRpcEngine.RpcRequestMessageWrapper;
 import org.apache.hadoop.ipc.RPC.RpcKind;
 import org.apache.hadoop.ipc.Server.AuthProtocol;
 import org.apache.hadoop.ipc.protobuf.IpcConnectionContextProtos.IpcConnectionContextProto;
@@ -88,16 +52,27 @@ import org.apache.hadoop.security.SaslRpcServer.AuthMethod;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ProtoUtil;
-import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.AsyncGet;
 import org.apache.htrace.core.Span;
 import org.apache.htrace.core.Tracer;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.protobuf.CodedOutputStream;
+import javax.net.SocketFactory;
+import javax.security.sasl.Sasl;
+import java.io.*;
+import java.net.*;
+import java.nio.ByteBuffer;
+import java.security.PrivilegedExceptionAction;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.apache.hadoop.ipc.RpcConstants.CONNECTION_CONTEXT_CALL_ID;
+import static org.apache.hadoop.ipc.RpcConstants.PING_CALL_ID;
 
 /** A client for an IPC service.  IPC calls take a single {@link Writable} as a
  * parameter, and return a {@link Writable} as their value.  A service runs on
@@ -105,7 +80,9 @@ import com.google.protobuf.CodedOutputStream;
  * 
  * @see Server
  */
-public class Client {
+@Public
+@InterfaceStability.Evolving
+public class Client implements AutoCloseable {
   
   public static final Log LOG = LogFactory.getLog(Client.class);
 
@@ -114,15 +91,35 @@ public class Client {
 
   private static final ThreadLocal<Integer> callId = new ThreadLocal<Integer>();
   private static final ThreadLocal<Integer> retryCount = new ThreadLocal<Integer>();
+  private static final ThreadLocal<Object> EXTERNAL_CALL_HANDLER
+      = new ThreadLocal<>();
+  private static final ThreadLocal<AsyncGet<? extends Writable, IOException>>
+      ASYNC_RPC_RESPONSE = new ThreadLocal<>();
+  private static final ThreadLocal<Boolean> asynchronousMode =
+      new ThreadLocal<Boolean>() {
+        @Override
+        protected Boolean initialValue() {
+          return false;
+        }
+      };
+
+  @SuppressWarnings("unchecked")
+  @Unstable
+  public static <T extends Writable> AsyncGet<T, IOException>
+      getAsyncRpcResponse() {
+    return (AsyncGet<T, IOException>) ASYNC_RPC_RESPONSE.get();
+  }
 
   /** Set call id and retry count for the next call. */
-  public static void setCallIdAndRetryCount(int cid, int rc) {
+  public static void setCallIdAndRetryCount(int cid, int rc,
+                                            Object externalHandler) {
     Preconditions.checkArgument(cid != RpcConstants.INVALID_CALL_ID);
     Preconditions.checkState(callId.get() == null);
     Preconditions.checkArgument(rc != RpcConstants.INVALID_RETRY_COUNT);
 
     callId.set(cid);
     retryCount.set(rc);
+    EXTERNAL_CALL_HANDLER.set(externalHandler);
   }
 
   private ConcurrentMap<ConnectionId, Connection> connections =
@@ -139,9 +136,11 @@ public class Client {
 
   private final boolean fallbackAllowed;
   private final byte[] clientId;
+  private final int maxAsyncCalls;
+  private final AtomicInteger asyncCallCounter = new AtomicInteger(0);
   
   final static int CONNECTION_CONTEXT_CALL_ID = -3;
-  
+
   /**
    * Executor on which IPC calls' parameters are sent.
    * Deferring the sending of parameters to a separate
@@ -338,6 +337,7 @@ public class Client {
     IOException error;          // exception, null if success
     final RPC.RpcKind rpcKind;      // Rpc EngineKind
     boolean done;               // true when call is done
+    private final Object externalHandler;
 
     private Call(RPC.RpcKind rpcKind, Writable param) {
       this.rpcKind = rpcKind;
@@ -357,6 +357,13 @@ public class Client {
       } else {
         this.retry = rc;
       }
+
+      this.externalHandler = EXTERNAL_CALL_HANDLER.get();
+    }
+
+    @Override
+    public String toString() {
+      return getClass().getSimpleName() + id;
     }
 
     /** Indicate when the call is complete and the
@@ -364,6 +371,12 @@ public class Client {
     protected synchronized void callComplete() {
       this.done = true;
       notify();                                 // notify caller
+
+      if (externalHandler != null) {
+        synchronized (externalHandler) {
+          externalHandler.notify();
+        }
+      }
     }
 
     /** Set the exception when there is an error.
@@ -403,8 +416,8 @@ public class Client {
     private SaslRpcClient saslRpcClient;
     
     private Socket socket = null;                 // connected socket
-    private DataInputStream in;
-    private DataOutputStream out;
+    private IpcStreams ipcStreams;
+    private final int maxResponseLength;
     private final int rpcTimeout;
     private int maxIdleTime; //connections will be culled if it was idle for 
     //maxIdleTime msecs
@@ -416,8 +429,8 @@ public class Client {
     private final boolean doPing; //do we need to send ping message
     private final int pingInterval; // how often sends ping to the server
     private final int soTimeout; // used by ipc ping and rpc timeout
-    private ByteArrayOutputStream pingRequest; // ping message
-    
+    private byte[] pingRequest; // ping message
+
     // currently active calls
     private Hashtable<Integer, Call> calls = new Hashtable<Integer, Call>();
     private AtomicLong lastActivity = new AtomicLong();// last I/O activity time
@@ -436,6 +449,9 @@ public class Client {
             0,
             new UnknownHostException());
       }
+      this.maxResponseLength = remoteId.conf.getInt(
+          CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH,
+          CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH_DEFAULT);
       this.rpcTimeout = remoteId.getRpcTimeout();
       this.maxIdleTime = remoteId.getMaxIdleTime();
       this.connectionRetryPolicy = remoteId.connectionRetryPolicy;
@@ -446,12 +462,13 @@ public class Client {
       this.doPing = remoteId.getDoPing();
       if (doPing) {
         // construct a RPC header with the callId as the ping callId
-        pingRequest = new ByteArrayOutputStream();
+        ResponseBuffer buf = new ResponseBuffer();
         RpcRequestHeaderProto pingHeader = ProtoUtil
             .makeRpcRequestHeader(RpcKind.RPC_PROTOCOL_BUFFER,
                 OperationProto.RPC_FINAL_PACKET, PING_CALL_ID,
                 RpcConstants.INVALID_RETRY_COUNT, clientId);
-        pingHeader.writeDelimitedTo(pingRequest);
+        pingHeader.writeDelimitedTo(buf);
+        pingRequest = buf.toByteArray();
       }
       this.pingInterval = remoteId.getPingInterval();
       if (rpcTimeout > 0) {
@@ -586,15 +603,15 @@ public class Client {
       }
       return false;
     }
-    
-    private synchronized AuthMethod setupSaslConnection(final InputStream in2, 
-        final OutputStream out2) throws IOException {
+
+    private synchronized AuthMethod setupSaslConnection(IpcStreams streams)
+        throws IOException {
       // Do not use Client.conf here! We must use ConnectionId.conf, since the
       // Client object is cached and shared between all RPC clients, even those
       // for separate services.
       saslRpcClient = new SaslRpcClient(remoteId.getTicket(),
           remoteId.getProtocol(), remoteId.getAddress(), remoteId.conf);
-      return saslRpcClient.saslConnect(in2, out2);
+      return saslRpcClient.saslConnect(streams);
     }
 
     /**
@@ -759,12 +776,9 @@ public class Client {
         Random rand = null;
         while (true) {
           setupConnection();
-          InputStream inStream = NetUtils.getInputStream(socket);
-          OutputStream outStream = NetUtils.getOutputStream(socket);
-          writeConnectionHeader(outStream);
+          ipcStreams = new IpcStreams(socket, maxResponseLength);
+          writeConnectionHeader(ipcStreams);
           if (authProtocol == AuthProtocol.SASL) {
-            final InputStream in2 = inStream;
-            final OutputStream out2 = outStream;
             UserGroupInformation ticket = remoteId.getTicket();
             if (ticket.getRealUser() != null) {
               ticket = ticket.getRealUser();
@@ -775,7 +789,7 @@ public class Client {
                     @Override
                     public AuthMethod run()
                         throws IOException, InterruptedException {
-                      return setupSaslConnection(in2, out2);
+                      return setupSaslConnection(ipcStreams);
                     }
                   });
             } catch (IOException ex) {
@@ -794,8 +808,7 @@ public class Client {
             }
             if (authMethod != AuthMethod.SIMPLE) {
               // Sasl connect is successful. Let's set up Sasl i/o streams.
-              inStream = saslRpcClient.getInputStream(inStream);
-              outStream = saslRpcClient.getOutputStream(outStream);
+              ipcStreams.setSaslClient(saslRpcClient);
               // for testing
               remoteId.saslQop =
                   (String)saslRpcClient.getNegotiatedProperty(Sasl.QOP);
@@ -814,18 +827,11 @@ public class Client {
               }
             }
           }
-        
-          if (doPing) {
-            inStream = new PingInputStream(inStream);
-          }
-          this.in = new DataInputStream(new BufferedInputStream(inStream));
 
-          // SASL may have already buffered the stream
-          if (!(outStream instanceof BufferedOutputStream)) {
-            outStream = new BufferedOutputStream(outStream);
+          if (doPing) {
+            ipcStreams.setInputStream(new PingInputStream(ipcStreams.in));
           }
-          this.out = new DataOutputStream(outStream);
-          
+
           writeConnectionContext(remoteId, authMethod);
 
           // update last activity time
@@ -939,17 +945,28 @@ public class Client {
      * |  AuthProtocol (1 byte)           |      
      * +----------------------------------+
      */
-    private void writeConnectionHeader(OutputStream outStream)
+    private void writeConnectionHeader(IpcStreams streams)
         throws IOException {
-      DataOutputStream out = new DataOutputStream(new BufferedOutputStream(outStream));
-      // Write out the header, version and authentication method
-      out.write(RpcConstants.HEADER.array());
-      out.write(RpcConstants.CURRENT_VERSION);
-      out.write(serviceClass);
-      out.write(authProtocol.callId);
-      out.flush();
+      // Write out the header, version and authentication method.
+      // The output stream is buffered but we must not flush it yet.  The
+      // connection setup protocol requires the client to send multiple
+      // messages before reading a response.
+      //
+      //   insecure: send header+context+call, read
+      //   secure  : send header+negotiate, read, (sasl), context+call, read
+      //
+      // The client must flush only when it's prepared to read.  Otherwise
+      // "broken pipe" exceptions occur if the server closes the connection
+      // before all messages are sent.
+      final DataOutputStream out = streams.out;
+      synchronized (out) {
+        out.write(RpcConstants.HEADER.array());
+        out.write(RpcConstants.CURRENT_VERSION);
+        out.write(serviceClass);
+        out.write(authProtocol.callId);
+      }
     }
-    
+
     /* Write the connection context header for each connection
      * Out is not synchronized because only the first thread does this.
      */
@@ -965,14 +982,17 @@ public class Client {
           .makeRpcRequestHeader(RpcKind.RPC_PROTOCOL_BUFFER,
               OperationProto.RPC_FINAL_PACKET, CONNECTION_CONTEXT_CALL_ID,
               RpcConstants.INVALID_RETRY_COUNT, clientId);
-      RpcRequestMessageWrapper request =
-          new RpcRequestMessageWrapper(connectionContextHeader, message);
-      
-      // Write out the packet length
-      out.writeInt(request.getLength());
-      request.write(out);
+      // do not flush.  the context and first ipc call request must be sent
+      // together to avoid possibility of broken pipes upon authz failure.
+      // see writeConnectionHeader
+      final ResponseBuffer buf = new ResponseBuffer();
+      connectionContextHeader.writeDelimitedTo(buf);
+      message.writeDelimitedTo(buf);
+      synchronized (ipcStreams.out) {
+        ipcStreams.sendRequest(buf.toByteArray());
+      }
     }
-    
+
     /* wait till someone signals us to start reading RPC response or
      * it is idle too long, it is marked as to be closed, 
      * or the client is marked as not running.
@@ -1015,10 +1035,9 @@ public class Client {
       long curTime = Time.now();
       if ( curTime - lastActivity.get() >= pingInterval) {
         lastActivity.set(curTime);
-        synchronized (out) {
-          out.writeInt(pingRequest.size());
-          pingRequest.writeTo(out);
-          out.flush();
+        synchronized (ipcStreams.out) {
+          ipcStreams.sendRequest(pingRequest);
+          ipcStreams.flush();
         }
       }
     }
@@ -1071,31 +1090,29 @@ public class Client {
       // 2) RpcRequest
       //
       // Items '1' and '2' are prepared here. 
-      final DataOutputBuffer d = new DataOutputBuffer();
       RpcRequestHeaderProto header = ProtoUtil.makeRpcRequestHeader(
           call.rpcKind, OperationProto.RPC_FINAL_PACKET, call.id, call.retry,
           clientId);
-      header.writeDelimitedTo(d);
-      call.rpcRequest.write(d);
+
+      final ResponseBuffer buf = new ResponseBuffer();
+      header.writeDelimitedTo(buf);
+      RpcWritable.wrap(call.rpcRequest).writeTo(buf);
 
       synchronized (sendRpcRequestLock) {
         Future<?> senderFuture = sendParamsExecutor.submit(new Runnable() {
           @Override
           public void run() {
             try {
-              synchronized (Connection.this.out) {
+              synchronized (ipcStreams.out) {
                 if (shouldCloseConnection.get()) {
                   return;
                 }
-                
-                if (LOG.isDebugEnabled())
+                if (LOG.isDebugEnabled()) {
                   LOG.debug(getName() + " sending #" + call.id);
-         
-                byte[] data = d.getData();
-                int totalLength = d.getLength();
-                out.writeInt(totalLength); // Total Length
-                out.write(data, 0, totalLength);// RpcRequestHeader + RpcRequest
-                out.flush();
+                }
+                // RpcRequestHeader + RpcRequest
+                ipcStreams.sendRequest(buf.toByteArray());
+                ipcStreams.flush();
               }
             } catch (IOException e) {
               // exception at this point would leave the connection in an
@@ -1105,7 +1122,7 @@ public class Client {
             } finally {
               //the buffer is just an in-memory buffer, but it is still polite to
               // close early
-              IOUtils.closeStream(d);
+              IOUtils.closeStream(buf);
             }
           }
         });
@@ -1136,13 +1153,11 @@ public class Client {
       touch();
       
       try {
-        int totalLen = in.readInt();
-        RpcResponseHeaderProto header = 
-            RpcResponseHeaderProto.parseDelimitedFrom(in);
+        ByteBuffer bb = ipcStreams.readResponse();
+        RpcWritable.Buffer packet = RpcWritable.Buffer.wrap(bb);
+        RpcResponseHeaderProto header =
+            packet.getValue(RpcResponseHeaderProto.getDefaultInstance());
         checkResponse(header);
-
-        int headerLen = header.getSerializedSize();
-        headerLen += CodedOutputStream.computeRawVarint32Size(headerLen);
 
         int callId = header.getCallId();
         if (LOG.isDebugEnabled())
@@ -1150,28 +1165,15 @@ public class Client {
 
         RpcStatusProto status = header.getStatus();
         if (status == RpcStatusProto.SUCCESS) {
-          Writable value = ReflectionUtils.newInstance(valueClass, conf);
-          value.readFields(in);                 // read value
+          Writable value = packet.newInstance(valueClass, conf);
           final Call call = calls.remove(callId);
           call.setRpcResponse(value);
-          
-          // verify that length was correct
-          // only for ProtobufEngine where len can be verified easily
-          if (call.getRpcResponse() instanceof ProtobufRpcEngine.RpcWrapper) {
-            ProtobufRpcEngine.RpcWrapper resWrapper = 
-                (ProtobufRpcEngine.RpcWrapper) call.getRpcResponse();
-            if (totalLen != headerLen + resWrapper.getLength()) { 
-              throw new RpcClientException(
-                  "RPC response length mismatch on rpc success");
-            }
-          }
-        } else { // Rpc Request failed
-          // Verify that length was correct
-          if (totalLen != headerLen) {
-            throw new RpcClientException(
-                "RPC response length mismatch on rpc error");
-          }
-          
+        }
+        // verify that packet length was correct
+        if (packet.remaining() > 0) {
+          throw new RpcClientException("RPC response length mismatch");
+        }
+        if (status != RpcStatusProto.SUCCESS) { // Rpc Request failed
           final String exceptionClassName = header.hasExceptionClassName() ?
                 header.getExceptionClassName() : 
                   "ServerDidNotSetExceptionClassName";
@@ -1216,8 +1218,7 @@ public class Client {
       connections.remove(remoteId, this);
 
       // close the streams and therefore the socket
-      IOUtils.closeStream(out);
-      IOUtils.closeStream(in);
+      IOUtils.closeStream(ipcStreams);
       disposeSasl();
 
       // clean up all calls
@@ -1269,6 +1270,9 @@ public class Client {
         CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_DEFAULT);
     this.clientId = ClientId.getClientId();
     this.sendParamsExecutor = clientExcecutorFactory.refAndGetInstance();
+    this.maxAsyncCalls = conf.getInt(
+        CommonConfigurationKeys.IPC_CLIENT_ASYNC_CALLS_MAX_KEY,
+        CommonConfigurationKeys.IPC_CLIENT_ASYNC_CALLS_MAX_DEFAULT);
   }
 
   /**
@@ -1335,6 +1339,20 @@ public class Client {
       fallbackToSimpleAuth);
   }
 
+  private void checkAsyncCall() throws IOException {
+    if (isAsynchronousMode()) {
+      if (asyncCallCounter.incrementAndGet() > maxAsyncCalls) {
+        asyncCallCounter.decrementAndGet();
+        String errMsg = String.format(
+            "Exceeded limit of max asynchronous calls: %d, " +
+            "please configure %s to adjust it.",
+            maxAsyncCalls,
+            CommonConfigurationKeys.IPC_CLIENT_ASYNC_CALLS_MAX_KEY);
+        throw new AsyncCallLimitExceededException(errMsg);
+      }
+    }
+  }
+
   /**
    * Make a call, passing <code>rpcRequest</code>, to the IPC server defined by
    * <code>remoteId</code>, returning the rpc response.
@@ -1353,22 +1371,106 @@ public class Client {
       ConnectionId remoteId, int serviceClass,
       AtomicBoolean fallbackToSimpleAuth) throws IOException {
     final Call call = createCall(rpcKind, rpcRequest);
-    Connection connection = getConnection(remoteId, call, serviceClass,
-      fallbackToSimpleAuth);
+    final Connection connection = getConnection(remoteId, call, serviceClass,
+        fallbackToSimpleAuth);
+
     try {
-      connection.sendRpcRequest(call);                 // send the rpc request
-    } catch (RejectedExecutionException e) {
-      throw new IOException("connection has been closed", e);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      LOG.warn("interrupted waiting to send rpc request to server", e);
-      throw new IOException(e);
+      checkAsyncCall();
+      try {
+        connection.sendRpcRequest(call);                 // send the rpc request
+      } catch (RejectedExecutionException e) {
+        throw new IOException("connection has been closed", e);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        LOG.warn("interrupted waiting to send rpc request to server", e);
+        throw new IOException(e);
+      }
+    } catch(Exception e) {
+      if (isAsynchronousMode()) {
+        releaseAsyncCall();
+      }
+      throw e;
     }
 
+    if (isAsynchronousMode()) {
+      final AsyncGet<Writable, IOException> asyncGet
+          = new AsyncGet<Writable, IOException>() {
+        @Override
+        public Writable get(long timeout, TimeUnit unit)
+            throws IOException, TimeoutException{
+          boolean done = true;
+          try {
+            final Writable w = getRpcResponse(call, connection, timeout, unit);
+            if (w == null) {
+              done = false;
+              throw new TimeoutException(call + " timed out "
+                  + timeout + " " + unit);
+            }
+            return w;
+          } finally {
+            if (done) {
+              releaseAsyncCall();
+            }
+          }
+        }
+
+        @Override
+        public boolean isDone() {
+          synchronized (call) {
+            return call.done;
+          }
+        }
+      };
+
+      ASYNC_RPC_RESPONSE.set(asyncGet);
+      return null;
+    } else {
+      return getRpcResponse(call, connection, -1, null);
+    }
+  }
+
+  /**
+   * Check if RPC is in asynchronous mode or not.
+   *
+   * @returns true, if RPC is in asynchronous mode, otherwise false for
+   *          synchronous mode.
+   */
+  @Unstable
+  public static boolean isAsynchronousMode() {
+    return asynchronousMode.get();
+  }
+
+  /**
+   * Set RPC to asynchronous or synchronous mode.
+   *
+   * @param async
+   *          true, RPC will be in asynchronous mode, otherwise false for
+   *          synchronous mode
+   */
+  @Unstable
+  public static void setAsynchronousMode(boolean async) {
+    asynchronousMode.set(async);
+  }
+
+  private void releaseAsyncCall() {
+    asyncCallCounter.decrementAndGet();
+  }
+
+  @VisibleForTesting
+  int getAsyncCallCount() {
+    return asyncCallCounter.get();
+  }
+
+  /** @return the rpc response or, in case of timeout, null. */
+  private Writable getRpcResponse(final Call call, final Connection connection,
+      final long timeout, final TimeUnit unit) throws IOException {
     synchronized (call) {
       while (!call.done) {
         try {
-          call.wait();                           // wait for the result
+          AsyncGet.Util.wait(call, timeout, unit);
+          if (timeout >= 0 && !call.done) {
+            return null;
+          }
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw new InterruptedIOException("Call interrupted");
@@ -1638,5 +1740,82 @@ public class Client {
    */
   public static int nextCallId() {
     return callIdCounter.getAndIncrement() & 0x7FFFFFFF;
+  }
+
+  @Override
+  @Unstable
+  public void close() throws Exception {
+    stop();
+  }
+
+  /** Manages the input and output streams for an IPC connection.
+   *  Only exposed for use by SaslRpcClient.
+   */
+  @InterfaceAudience.Private
+  public static class IpcStreams implements Closeable, Flushable {
+    private DataInputStream in;
+    public DataOutputStream out;
+    private int maxResponseLength;
+    private boolean firstResponse = true;
+
+    IpcStreams(Socket socket, int maxResponseLength) throws IOException {
+      this.maxResponseLength = maxResponseLength;
+      setInputStream(
+          new BufferedInputStream(NetUtils.getInputStream(socket)));
+      setOutputStream(
+          new BufferedOutputStream(NetUtils.getOutputStream(socket)));
+    }
+
+    void setSaslClient(SaslRpcClient client) throws IOException {
+      setInputStream(client.getInputStream(in));
+      setOutputStream(client.getOutputStream(out));
+    }
+
+    private void setInputStream(InputStream is) {
+      this.in = (is instanceof DataInputStream)
+          ? (DataInputStream)is : new DataInputStream(is);
+    }
+
+    private void setOutputStream(OutputStream os) {
+      this.out = (os instanceof DataOutputStream)
+          ? (DataOutputStream)os : new DataOutputStream(os);
+    }
+
+    public ByteBuffer readResponse() throws IOException {
+      int length = in.readInt();
+      if (firstResponse) {
+        firstResponse = false;
+        // pre-rpcv9 exception, almost certainly a version mismatch.
+        if (length == -1) {
+          in.readInt(); // ignore fatal/error status, it's fatal for us.
+          throw new RemoteException(WritableUtils.readString(in),
+                                    WritableUtils.readString(in));
+        }
+      }
+      if (length <= 0) {
+        throw new RpcException("RPC response has invalid length");
+      }
+      if (maxResponseLength > 0 && length > maxResponseLength) {
+        throw new RpcException("RPC response exceeds maximum data length");
+      }
+      ByteBuffer bb = ByteBuffer.allocate(length);
+      in.readFully(bb.array());
+      return bb;
+    }
+
+    public void sendRequest(byte[] buf) throws IOException {
+      out.write(buf);
+    }
+
+    @Override
+    public void flush() throws IOException {
+      out.flush();
+    }
+
+    @Override
+    public void close() {
+      IOUtils.closeStream(out);
+      IOUtils.closeStream(in);
+    }
   }
 }

@@ -383,9 +383,10 @@ public class TestApplicationCleanup {
     // nm1/nm2 register to rm2, and do a heartbeat
     nm1.setResourceTrackerService(rm2.getResourceTrackerService());
     nm1.registerNode(Arrays.asList(NMContainerStatus.newInstance(
-      ContainerId.newContainerId(am0.getApplicationAttemptId(), 1),
-      ContainerState.COMPLETE, Resource.newInstance(1024, 1), "", 0,
-      Priority.newInstance(0), 1234)), Arrays.asList(app0.getApplicationId()));
+        ContainerId.newContainerId(am0.getApplicationAttemptId(), 1), 0,
+        ContainerState.COMPLETE, Resource.newInstance(1024, 1), "", 0,
+        Priority.newInstance(0), 1234)),
+        Arrays.asList(app0.getApplicationId()));
     nm2.setResourceTrackerService(rm2.getResourceTrackerService());
     nm2.registerNode(Arrays.asList(app0.getApplicationId()));
 
@@ -531,7 +532,7 @@ public class TestApplicationCleanup {
     // 4. Verify Memory Usage by cluster, it should be 3072. AM memory +
     // requested memory. 1024 + 2048=3072
     ResourceScheduler rs = rm1.getRMContext().getScheduler();
-    int allocatedMB = rs.getRootQueueMetrics().getAllocatedMB();
+    long allocatedMB = rs.getRootQueueMetrics().getAllocatedMB();
     Assert.assertEquals(amMemory + containerMemory, allocatedMB);
 
     // 5. Re-register NM by sending completed container status
@@ -595,7 +596,7 @@ public class TestApplicationCleanup {
       int memory) {
     ContainerId containerId = ContainerId.newContainerId(appAttemptId, id);
     NMContainerStatus containerReport =
-        NMContainerStatus.newInstance(containerId, containerState,
+        NMContainerStatus.newInstance(containerId, 0, containerState,
             Resource.newInstance(memory, 1), "recover container", 0,
             Priority.newInstance(0), 0);
     return containerReport;

@@ -83,7 +83,7 @@ import org.apache.hadoop.util.Time;
  * ViewFs is specified with the following URI: <b>viewfs:///</b> 
  * <p>
  * To use viewfs one would typically set the default file system in the
- * config  (i.e. fs.default.name< = viewfs:///) along with the
+ * config  (i.e. fs.defaultFS < = viewfs:///) along with the
  * mount table config variables as described below. 
  * 
  * <p>
@@ -749,6 +749,14 @@ public class ViewFs extends AbstractFileSystem {
     res.targetFileSystem.setStoragePolicy(res.remainingPath, policyName);
   }
 
+  @Override
+  public void unsetStoragePolicy(final Path src)
+      throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res =
+        fsState.resolve(getUriPath(src), true);
+    res.targetFileSystem.unsetStoragePolicy(res.remainingPath);
+  }
+
   /**
    * Retrieve the storage policy for a given file or directory.
    *
@@ -835,14 +843,14 @@ public class ViewFs extends AbstractFileSystem {
     public FileStatus getFileStatus(final Path f) throws IOException {
       checkPathIsSlash(f);
       return new FileStatus(0, true, 0, 0, creationTime, creationTime,
-          PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+          PERMISSION_555, ugi.getUserName(), ugi.getPrimaryGroupName(),
           new Path(theInternalDir.fullPath).makeQualified(
               myUri, null));
     }
     
     @Override
     public FileStatus getFileLinkStatus(final Path f)
-        throws FileNotFoundException {
+        throws IOException {
       // look up i internalDirs children - ignore first Slash
       INode<AbstractFileSystem> inode =
         theInternalDir.children.get(f.toUri().toString().substring(1)); 
@@ -855,13 +863,13 @@ public class ViewFs extends AbstractFileSystem {
         INodeLink<AbstractFileSystem> inodelink = 
           (INodeLink<AbstractFileSystem>) inode;
         result = new FileStatus(0, false, 0, 0, creationTime, creationTime,
-            PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+            PERMISSION_555, ugi.getUserName(), ugi.getPrimaryGroupName(),
             inodelink.getTargetLink(),
             new Path(inode.fullPath).makeQualified(
                 myUri, null));
       } else {
         result = new FileStatus(0, true, 0, 0, creationTime, creationTime,
-          PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+          PERMISSION_555, ugi.getUserName(), ugi.getPrimaryGroupName(),
           new Path(inode.fullPath).makeQualified(
               myUri, null));
       }
@@ -900,7 +908,7 @@ public class ViewFs extends AbstractFileSystem {
 
           result[i++] = new FileStatus(0, false, 0, 0,
             creationTime, creationTime,
-            PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+            PERMISSION_555, ugi.getUserName(), ugi.getPrimaryGroupName(),
             link.getTargetLink(),
             new Path(inode.fullPath).makeQualified(
                 myUri, null));
@@ -1034,7 +1042,7 @@ public class ViewFs extends AbstractFileSystem {
     public AclStatus getAclStatus(Path path) throws IOException {
       checkPathIsSlash(path);
       return new AclStatus.Builder().owner(ugi.getUserName())
-          .group(ugi.getGroupNames()[0])
+          .group(ugi.getPrimaryGroupName())
           .addEntries(AclUtil.getMinimalAcl(PERMISSION_555))
           .stickyBit(false).build();
     }

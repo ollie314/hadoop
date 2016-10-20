@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,6 +71,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppRunningOnNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.AllocationExpirationInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeResourceUpdateSchedulerEvent;
@@ -778,8 +780,8 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
       if (previousRMNode != null) {
         rmNode.updateMetricsForRejoinedNode(previousRMNode.getState());
       } else {
-        NodesListManager.UnknownNodeId unknownNodeId =
-            new NodesListManager.UnknownNodeId(nodeId.getHost());
+        NodeId unknownNodeId =
+            NodesListManager.createUnknownNodeId(nodeId.getHost());
         previousRMNode =
             rmNode.context.getInactiveRMNodes().remove(unknownNodeId);
         if (previousRMNode != null) {
@@ -1020,8 +1022,7 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
     LOG.info("Deactivating Node " + rmNode.nodeId + " as it is now "
         + finalState);
     rmNode.context.getInactiveRMNodes().put(rmNode.nodeId, rmNode);
-    if (finalState == NodeState.SHUTDOWN &&
-        rmNode.context.getNodesListManager().isUntrackedNode(rmNode.hostName)) {
+    if (rmNode.context.getNodesListManager().isUntrackedNode(rmNode.hostName)) {
       rmNode.setUntrackedTimeStamp(Time.monotonicNow());
     }
   }
@@ -1132,36 +1133,27 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
       NodeState initialState = rmNode.getState();
       boolean isNodeDecommissioning =
           initialState.equals(NodeState.DECOMMISSIONING);
+      if (isNodeDecommissioning) {
+        List<ApplicationId> keepAliveApps = statusEvent.getKeepAliveAppIds();
+        if (rmNode.runningApplications.isEmpty() &&
+            (keepAliveApps == null || keepAliveApps.isEmpty())) {
+          RMNodeImpl.deactivateNode(rmNode, NodeState.DECOMMISSIONED);
+          return NodeState.DECOMMISSIONED;
+        }
+      }
+
       if (!remoteNodeHealthStatus.getIsNodeHealthy()) {
         LOG.info("Node " + rmNode.nodeId +
             " reported UNHEALTHY with details: " +
             remoteNodeHealthStatus.getHealthReport());
         // if a node in decommissioning receives an unhealthy report,
-        // it will keep decommissioning.
+        // it will stay in decommissioning.
         if (isNodeDecommissioning) {
           return NodeState.DECOMMISSIONING;
         } else {
           reportNodeUnusable(rmNode, NodeState.UNHEALTHY);
           return NodeState.UNHEALTHY;
         }
-      }
-      if (isNodeDecommissioning) {
-        List<ApplicationId> runningApps = rmNode.getRunningApps();
-
-        List<ApplicationId> keepAliveApps = statusEvent.getKeepAliveAppIds();
-
-        // no running (and keeping alive) app on this node, get it
-        // decommissioned.
-        // TODO may need to check no container is being scheduled on this node
-        // as well.
-        if ((runningApps == null || runningApps.size() == 0)
-            && (keepAliveApps == null || keepAliveApps.size() == 0)) {
-          RMNodeImpl.deactivateNode(rmNode, NodeState.DECOMMISSIONED);
-          return NodeState.DECOMMISSIONED;
-        }
-
-        // TODO (in YARN-3223) if node in decommissioning, get node resource
-        // updated if container get finished (keep available resource to be 0)
       }
 
       rmNode.handleContainerStatus(statusEvent.getContainers());
@@ -1309,6 +1301,7 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
         new ArrayList<ContainerStatus>();
     List<ContainerStatus> completedContainers =
         new ArrayList<ContainerStatus>();
+    int numRemoteRunningContainers = 0;
     for (ContainerStatus remoteContainer : containerStatuses) {
       ContainerId containerId = remoteContainer.getContainerId();
 
@@ -1335,11 +1328,12 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
               + " is the first container get launched for application "
               + containerAppId);
         }
-        runningApplications.add(containerAppId);
+        handleRunningAppOnNode(this, context, containerAppId, nodeId);
       }
 
       // Process running containers
       if (remoteContainer.getState() == ContainerState.RUNNING) {
+        ++numRemoteRunningContainers;
         if (!launchedContainers.contains(containerId)) {
           // Just launched container. RM knows about it the first time.
           launchedContainers.add(containerId);
@@ -1357,10 +1351,42 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
             new AllocationExpirationInfo(containerId));
       }
     }
+    completedContainers.addAll(findLostContainers(
+          numRemoteRunningContainers, containerStatuses));
+
     if (newlyLaunchedContainers.size() != 0 || completedContainers.size() != 0) {
       nodeUpdateQueue.add(new UpdatedContainerInfo(newlyLaunchedContainers,
           completedContainers));
     }
+  }
+
+  private List<ContainerStatus> findLostContainers(int numRemoteRunning,
+      List<ContainerStatus> containerStatuses) {
+    if (numRemoteRunning >= launchedContainers.size()) {
+      return Collections.emptyList();
+    }
+    Set<ContainerId> nodeContainers =
+        new HashSet<ContainerId>(numRemoteRunning);
+    List<ContainerStatus> lostContainers = new ArrayList<ContainerStatus>(
+        launchedContainers.size() - numRemoteRunning);
+    for (ContainerStatus remoteContainer : containerStatuses) {
+      if (remoteContainer.getState() == ContainerState.RUNNING) {
+        nodeContainers.add(remoteContainer.getContainerId());
+      }
+    }
+    Iterator<ContainerId> iter = launchedContainers.iterator();
+    while (iter.hasNext()) {
+      ContainerId containerId = iter.next();
+      if (!nodeContainers.contains(containerId)) {
+        String diag = "Container " + containerId
+            + " was running but not reported from " + nodeId;
+        LOG.warn(diag);
+        lostContainers.add(SchedulerUtils.createAbnormalContainerStatus(
+            containerId, diag));
+        iter.remove();
+      }
+    }
+    return lostContainers;
   }
 
   private void handleLogAggregationStatus(
@@ -1405,4 +1431,4 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
   public void setUntrackedTimeStamp(long ts) {
     this.timeStamp = ts;
   }
- }
+}

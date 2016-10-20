@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -38,7 +39,9 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
+import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryProxy;
@@ -49,10 +52,15 @@ import org.apache.hadoop.util.Progressable;
  * <a href="http://aws.amazon.com/s3">Amazon S3</a>.
  *
  * @see NativeS3FileSystem
+ * @deprecated Use {@link NativeS3FileSystem} and {@link S3AFileSystem} instead.
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
+@Deprecated
 public class S3FileSystem extends FileSystem {
+
+  private static final AtomicBoolean hasWarnedDeprecation
+      = new AtomicBoolean(false);
 
   private URI uri;
 
@@ -66,6 +74,16 @@ public class S3FileSystem extends FileSystem {
 
   public S3FileSystem(FileSystemStore store) {
     this.store = store;
+  }
+
+  /**
+   * This is to warn the first time in a JVM that an S3FileSystem is created.
+   */
+  private static void warnDeprecation() {
+    if (!hasWarnedDeprecation.getAndSet(true)) {
+      LOG.warn("S3FileSystem is deprecated and will be removed in " +
+          "future releases. Use NativeS3FileSystem or S3AFileSystem instead.");
+    }
   }
 
   /**
@@ -86,12 +104,13 @@ public class S3FileSystem extends FileSystem {
   @Override
   public void initialize(URI uri, Configuration conf) throws IOException {
     super.initialize(uri, conf);
+    warnDeprecation();
     if (store == null) {
       store = createDefaultStore(conf);
     }
     store.initialize(uri, conf);
     setConf(conf);
-    this.uri = URI.create(uri.getScheme() + "://" + uri.getAuthority());
+    this.uri = S3xLoginHelper.buildFSURI(uri);
     this.workingDir =
       new Path("/user", System.getProperty("user.name")).makeQualified(this);
   }
@@ -132,6 +151,23 @@ public class S3FileSystem extends FileSystem {
       return path;
     }
     return new Path(workingDir, path);
+  }
+
+  /**
+   * Check that a Path belongs to this FileSystem.
+   * Unlike the superclass, this version does not look at authority,
+   * only hostnames.
+   * @param path to check
+   * @throws IllegalArgumentException if there is an FS mismatch
+   */
+  @Override
+  protected void checkPath(Path path) {
+    S3xLoginHelper.checkPath(getConf(), getUri(), path, getDefaultPort());
+  }
+
+  @Override
+  protected URI canonicalizeUri(URI rawUri) {
+    return S3xLoginHelper.canonicalizeUri(rawUri, getDefaultPort());
   }
 
   /**
