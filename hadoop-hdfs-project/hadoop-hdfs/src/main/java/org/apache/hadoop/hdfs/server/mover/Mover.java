@@ -130,13 +130,16 @@ public class Mover {
     final int maxConcurrentMovesPerNode = conf.getInt(
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT);
+    final int maxNoMoveInterval = conf.getInt(
+        DFSConfigKeys.DFS_MOVER_MAX_NO_MOVE_INTERVAL_KEY,
+        DFSConfigKeys.DFS_MOVER_MAX_NO_MOVE_INTERVAL_DEFAULT);
     this.retryMaxAttempts = conf.getInt(
         DFSConfigKeys.DFS_MOVER_RETRY_MAX_ATTEMPTS_KEY,
         DFSConfigKeys.DFS_MOVER_RETRY_MAX_ATTEMPTS_DEFAULT);
     this.retryCount = retryCount;
     this.dispatcher = new Dispatcher(nnc, Collections.<String> emptySet(),
         Collections.<String> emptySet(), movedWinWidth, moverThreads, 0,
-        maxConcurrentMovesPerNode, conf);
+        maxConcurrentMovesPerNode, maxNoMoveInterval, conf);
     this.storages = new StorageMap();
     this.targetPaths = nnc.getTargetPaths();
     this.blockStoragePolicies = new BlockStoragePolicy[1 <<
@@ -607,8 +610,8 @@ public class Mover {
             DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT,
             TimeUnit.SECONDS) * 2000 +
         conf.getTimeDuration(
-            DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY,
-            DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_DEFAULT,
+            DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+            DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_DEFAULT,
             TimeUnit.SECONDS) * 1000;
     AtomicInteger retryCount = new AtomicInteger(0);
     LOG.info("namenodes = " + namenodes);

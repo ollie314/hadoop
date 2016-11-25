@@ -194,16 +194,17 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_NAMENODE_ACCESSTIME_PRECISION_KEY =
       HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY;
   public static final long    DFS_NAMENODE_ACCESSTIME_PRECISION_DEFAULT = 3600000;
-  public static final String  DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY =
-      HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY;
-  public static final boolean DFS_NAMENODE_REPLICATION_CONSIDERLOAD_DEFAULT = true;
-  public static final String  DFS_NAMENODE_REPLICATION_CONSIDERLOAD_FACTOR =
-      "dfs.namenode.replication.considerLoad.factor";
+  public static final String DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY =
+      HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY;
+  public static final boolean DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_DEFAULT =
+      true;
+  public static final String  DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR =
+      "dfs.namenode.redundancy.considerLoad.factor";
   public static final double
-      DFS_NAMENODE_REPLICATION_CONSIDERLOAD_FACTOR_DEFAULT = 2.0;
-  public static final String  DFS_NAMENODE_REPLICATION_INTERVAL_KEY =
-      HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY;
-  public static final int     DFS_NAMENODE_REPLICATION_INTERVAL_DEFAULT = 3;
+      DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR_DEFAULT = 2.0;
+  public static final String DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY =
+      HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY;
+  public static final int DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_DEFAULT = 3;
   public static final String  DFS_NAMENODE_REPLICATION_MIN_KEY =
       HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REPLICATION_MIN_KEY;
   public static final int     DFS_NAMENODE_REPLICATION_MIN_DEFAULT = 1;
@@ -502,6 +503,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_BALANCER_KERBEROS_PRINCIPAL_KEY = "dfs.balancer.kerberos.principal";
   public static final String  DFS_BALANCER_BLOCK_MOVE_TIMEOUT = "dfs.balancer.block-move.timeout";
   public static final int     DFS_BALANCER_BLOCK_MOVE_TIMEOUT_DEFAULT = 0;
+  public static final String  DFS_BALANCER_MAX_NO_MOVE_INTERVAL_KEY = "dfs.balancer.max-no-move-interval";
+  public static final int    DFS_BALANCER_MAX_NO_MOVE_INTERVAL_DEFAULT = 60*1000; // One minute
 
 
   public static final String  DFS_MOVER_MOVEDWINWIDTH_KEY = "dfs.mover.movedWinWidth";
@@ -519,6 +522,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.mover.keytab.file";
   public static final String  DFS_MOVER_KERBEROS_PRINCIPAL_KEY =
       "dfs.mover.kerberos.principal";
+  public static final String  DFS_MOVER_MAX_NO_MOVE_INTERVAL_KEY = "dfs.mover.max-no-move-interval";
+  public static final int    DFS_MOVER_MAX_NO_MOVE_INTERVAL_DEFAULT = 60*1000; // One minute
 
   public static final String  DFS_DATANODE_ADDRESS_KEY = "dfs.datanode.address";
   public static final int     DFS_DATANODE_DEFAULT_PORT = 9866;

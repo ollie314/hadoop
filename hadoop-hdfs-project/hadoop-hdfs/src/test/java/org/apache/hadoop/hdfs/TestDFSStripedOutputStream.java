@@ -25,6 +25,8 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.server.namenode.ErasureCodingPolicyManager;
 import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
 import org.apache.hadoop.io.erasurecode.rawcoder.NativeRSRawErasureCoderFactory;
@@ -45,13 +47,15 @@ public class TestDFSStripedOutputStream {
     GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.ALL);
   }
 
-  private int dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private int parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+  private final ErasureCodingPolicy ecPolicy =
+      ErasureCodingPolicyManager.getSystemDefaultPolicy();
+  private final int dataBlocks = ecPolicy.getNumDataUnits();
+  private final int parityBlocks = ecPolicy.getNumParityUnits();
 
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
   private Configuration conf;
-  private final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
+  private final int cellSize = ecPolicy.getCellSize();
   private final int stripesPerBlock = 4;
   private final int blockSize = cellSize * stripesPerBlock;
 
@@ -63,7 +67,7 @@ public class TestDFSStripedOutputStream {
     int numDNs = dataBlocks + parityBlocks + 2;
     conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY,
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
         false);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
     if (ErasureCodeNative.isNativeCodeLoaded()) {
@@ -169,6 +173,6 @@ public class TestDFSStripedOutputStream {
     StripedFileTestUtil.waitBlockGroupsReported(fs, src);
 
     StripedFileTestUtil.checkData(fs, testPath, writeBytes,
-        new ArrayList<DatanodeInfo>(), null);
+        new ArrayList<DatanodeInfo>(), null, blockSize * dataBlocks);
   }
 }
